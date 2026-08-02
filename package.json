@@ -1,0 +1,98 @@
+{
+  "name": "milk-management-system",
+  "private": true,
+  "version": "5.3.8",
+  "description": "Milk Management System for Local Dairy",
+  "author": "Aditya",
+  "main": "electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "start": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron:dev": "concurrently -k \"cross-env BROWSER=none vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
+    "electron:build": "vite build && electron-builder --x64",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@supabase/supabase-js": "^2.89.0",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "antd": "^6.0.1",
+    "bcryptjs": "^3.0.3",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "dayjs": "^1.11.19",
+    "electron": "^39.8.0",
+    "electron-builder": "^26.0.12",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "html2canvas": "^1.4.1",
+    "i18next": "^25.7.2",
+    "i18next-browser-languagedetector": "^8.2.0",
+    "jspdf": "^3.0.4",
+    "jspdf-autotable": "^5.0.2",
+    "lucide-react": "^0.555.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-hot-toast": "^2.6.0",
+    "react-i18next": "^16.4.0",
+    "react-router-dom": "^7.9.6",
+    "recharts": "^3.5.1",
+    "vite": "^7.2.4",
+    "wait-on": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.aditya.dudhsakha",
+    "productName": "DudhSakha",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "!mobile_app/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "fatmachine/python",
+        "to": "fatmachine/python",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DudhSakha",
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "aditya14340",
+        "repo": "dudhsakha-releases"
+      }
+    ]
+  },
+  "dependencies": {
+    "app-builder-bin": "^5.0.0-alpha.12",
+    "electron-updater": "^6.8.3",
+    "node-machine-id": "^1.1.12"
+  }
+}

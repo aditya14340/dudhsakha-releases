@@ -1,0 +1,8 @@
+version: 5.3.8
+files:
+  - url: DudhSakha.Setup.5.3.8.exe
+    sha512: I6iTAAOhBrBmnmOBmmZpU6RSc3cGFcfrp3QIgSGpppfsHegx0C6P2hr2CCPqdSpoTJqGDl0OcFQGr79hP7A7ng==
+    size: 152858723
+path: DudhSakha.Setup.5.3.8.exe
+sha512: I6iTAAOhBrBmnmOBmmZpU6RSc3cGFcfrp3QIgSGpppfsHegx0C6P2hr2CCPqdSpoTJqGDl0OcFQGr79hP7A7ng==
+releaseDate: '2026-08-02T07:46:00.000Z'
