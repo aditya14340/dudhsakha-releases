@@ -1,8 +1,8 @@
 version: 6.0.3
 files:
   - url: DudhSakha-Setup-6.0.3.exe
-    sha512: APzYCW3/6LhWh/+Cm7/LCllXLlcOsqg3Y9JhmLD4jb7rYnPtrIFTlx1ML5jN3TAA3/6PXAz2u3/KOxUr4GyXOg==
-    size: 152864756
+    sha512: iORHqvsSRbH4wi2JHwaqBGQR5OtOeWQz3261dbwkR6DjUG/83ffsCrjnn5RJsYJ1tQ8aEJJewrO9fEmTBw1OAw==
+    size: 152864760
 path: DudhSakha-Setup-6.0.3.exe
-sha512: APzYCW3/6LhWh/+Cm7/LCllXLlcOsqg3Y9JhmLD4jb7rYnPtrIFTlx1ML5jN3TAA3/6PXAz2u3/KOxUr4GyXOg==
-releaseDate: '2026-09-10T05:27:59.556Z'
+sha512: iORHqvsSRbH4wi2JHwaqBGQR5OtOeWQz3261dbwkR6DjUG/83ffsCrjnn5RJsYJ1tQ8aEJJewrO9fEmTBw1OAw==
+releaseDate: '2026-09-10T05:42:45.006Z'
