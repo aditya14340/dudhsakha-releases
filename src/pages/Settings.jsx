@@ -757,7 +757,7 @@ function Settings({ user }) {
                                     App Version
                                 </span>
                                 <span style={{ fontSize: '14px', color: '#111827', fontWeight: '700', background: '#f3f4f6', padding: '4px 10px', borderRadius: '6px' }}>
-                                    v6.0.3
+                                    v6.0.4
                                 </span>
                             </div>
 

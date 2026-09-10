@@ -802,73 +802,80 @@ export default function ThevManagement({ user }) {
         const grandPaid     = farmerRefundSummary.reduce((s, r) => s + r.total_paid, 0);
         const grandLitres   = Object.values(milkMap).reduce((s, v) => s + v, 0);
 
+        const dairyTitle = user?.dairy_name || 'DudhSakha';
+
         const interestTh = hasInterest
-            ? `<th style="padding:9px 12px;border:1px solid #e2e8f0;background:#ede9fe;color:#5b21b6">व्याज / बोनस</th>`
+            ? `<th style="padding:11px 14px;border:1px solid #cbd5e1;background:#ede9fe;color:#5b21b6;font-size:1.05rem">व्याज / बोनस</th>`
             : '';
         const interestGrandTd = hasInterest
-            ? `<td style="padding:9px 12px;border:1px solid #e2e8f0;background:#f5f3ff;color:#5b21b6;font-weight:700">Rs.${fmt(grandInterest)}</td>`
+            ? `<td style="padding:12px 14px;border:1px solid #cbd5e1;background:#f5f3ff;color:#5b21b6;font-weight:800;font-size:1.15rem">Rs.${fmt(grandInterest)}</td>`
             : '';
 
         const rows = farmerRefundSummary.map((s, idx) => {
             const litres = milkMap[String(s.farmer_id)] || 0;
             const interestTd = hasInterest
-                ? `<td style="padding:9px 12px;border:1px solid #e2e8f0;color:#7c3aed">Rs.${fmt(s.total_interest)}</td>`
+                ? `<td style="padding:12px 14px;border:1px solid #cbd5e1;color:#7c3aed;font-size:1.05rem;font-weight:600">Rs.${fmt(s.total_interest)}</td>`
                 : '';
             return `<tr style="background:${idx % 2 === 0 ? '#fff' : '#f8fafc'}">
-                <td style="padding:9px 12px;border:1px solid #e2e8f0;text-align:center;color:#64748b">${idx + 1}</td>
-                <td style="padding:9px 12px;border:1px solid #e2e8f0;font-weight:600">${s.farmer_name}</td>
-                <td style="padding:9px 12px;border:1px solid #e2e8f0;color:#64748b">#${s.farmer_code}</td>
-                <td style="padding:9px 12px;border:1px solid #e2e8f0;color:#4f46e5;font-weight:600">${s.thev_name || '—'}</td>
-                <td style="padding:9px 12px;border:1px solid #e2e8f0;color:#0369a1;font-weight:600;text-align:right">${litres > 0 ? litres + ' L' : '—'}</td>
-                <td style="padding:9px 12px;border:1px solid #e2e8f0;color:#d97706;font-weight:700">Rs.${fmt(s.total_refund)}</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;text-align:center;color:#64748b;font-size:1.05rem;font-weight:600">${idx + 1}</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;font-weight:700;font-size:1.1rem;color:#0f172a">${s.farmer_name}</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;color:#475569;font-size:1.05rem;font-weight:600">#${s.farmer_code}</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;color:#4f46e5;font-weight:700;font-size:1.05rem">${s.thev_name || '—'}</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;color:#0369a1;font-weight:700;text-align:right;font-size:1.05rem">${litres > 0 ? litres + ' L' : '—'}</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;color:#d97706;font-weight:800;font-size:1.1rem">Rs.${fmt(s.total_refund)}</td>
                 ${interestTd}
-                <td style="padding:9px 12px;border:1px solid #e2e8f0;color:#15803d;font-weight:800;font-size:1.05em">Rs.${fmt(s.total_paid)}</td>
-                <td style="padding:9px 12px;border:1px solid #e2e8f0;text-align:center">
-                    <div style="width:110px;height:36px;border-bottom:1.5px solid #94a3b8;margin:0 auto"></div>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;color:#15803d;font-weight:800;font-size:1.2rem">Rs.${fmt(s.total_paid)}</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;text-align:center">
+                    <div style="width:130px;height:42px;border-bottom:1.5px solid #94a3b8;margin:0 auto"></div>
                 </td>
             </tr>`;
         }).join('');
 
         const html = `<!DOCTYPE html><html lang="mr"><head>
         <meta charset="utf-8">
-        <title>ठेव परतावा सारांश</title>
+        <title>ठेव परतावा सारांश - ${dairyTitle}</title>
         <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;600;700;800&family=Noto+Sans+Devanagari:wght@400;600;700;800&display=swap" rel="stylesheet">
         <style>
             *{box-sizing:border-box;margin:0;padding:0}
-            body{font-family:'Noto Sans Devanagari','Noto Sans',Arial,sans-serif;padding:24px 28px;color:#1e293b;font-size:13px}
-            h1{text-align:center;color:#4f46e5;font-size:1.4rem;font-weight:800;margin-bottom:4px}
-            .subtitle{text-align:center;color:#64748b;font-size:.85rem;margin-bottom:20px}
-            table{width:100%;border-collapse:collapse;font-size:.88rem}
-            th{padding:10px 12px;border:1px solid #e2e8f0;background:#4f46e5;color:#fff;font-weight:700;text-align:left}
-            tfoot td{font-weight:700;font-size:.92rem}
-            .footer{margin-top:28px;text-align:center;color:#94a3b8;font-size:.72rem;border-top:1px solid #f1f5f9;padding-top:10px}
-            @media print{body{padding:12px}@page{size:A4 landscape;margin:12mm}}
+            body{font-family:'Noto Sans Devanagari','Noto Sans',Arial,sans-serif;padding:22px 26px;color:#1e293b;font-size:16px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+            .header-box{text-align:center;margin-bottom:20px;border-bottom:2px solid #4f46e5;padding-bottom:12px}
+            .dairy-name{color:#1e1b4b;font-size:1.95rem;font-weight:800;margin-bottom:4px;letter-spacing:-0.3px}
+            h1{color:#4f46e5;font-size:1.5rem;font-weight:700;margin-bottom:6px}
+            .subtitle{color:#475569;font-size:1.05rem;font-weight:500}
+            table{width:100%;border-collapse:collapse;font-size:1.05rem}
+            th{padding:12px 14px;border:1px solid #cbd5e1;background:#4f46e5;color:#fff;font-weight:700;text-align:left;font-size:1.05rem}
+            tfoot td{font-weight:800;font-size:1.15rem}
+            .footer{margin-top:24px;text-align:center;color:#64748b;font-size:.92rem;border-top:1px solid #e2e8f0;padding-top:10px}
+            @media print{body{padding:10px}@page{size:A4 landscape;margin:10mm}}
         </style></head><body>
-        <h1>ठेव परतावा सारांश / Thev Refund Summary</h1>
-        <div class="subtitle">कालावधी: <b>${selectedPeriodLabel}</b> &nbsp;|&nbsp; एकूण शेतकरी: <b>${farmerRefundSummary.length}</b> &nbsp;|&nbsp; मुद्रण: ${new Date().toLocaleDateString('mr-IN')}</div>
+        <div class="header-box">
+            <div class="dairy-name">${dairyTitle}</div>
+            <h1>ठेव परतावा सारांश / Thev Refund Summary</h1>
+            <div class="subtitle">कालावधी: <b>${selectedPeriodLabel}</b> &nbsp;|&nbsp; एकूण शेतकरी: <b>${farmerRefundSummary.length}</b> &nbsp;|&nbsp; मुद्रण दिनांक: <b>${new Date().toLocaleDateString('mr-IN')}</b></div>
+        </div>
         <table>
             <thead><tr>
-                <th style="width:36px;text-align:center">#</th>
+                <th style="width:40px;text-align:center">#</th>
                 <th>शेतकरी नाव</th>
-                <th style="width:64px">कोड</th>
+                <th style="width:70px">कोड</th>
                 <th>ठेव योजना</th>
-                <th style="width:90px;text-align:right">एकूण दूध</th>
-                <th style="width:110px">परतावा रक्कम</th>
+                <th style="width:105px;text-align:right">एकूण दूध</th>
+                <th style="width:125px">परतावा रक्कम</th>
                 ${interestTh}
-                <th style="width:110px">एकूण दिलेले</th>
-                <th style="width:130px;text-align:center">शेतकरी सही</th>
+                <th style="width:125px">एकूण दिलेले</th>
+                <th style="width:140px;text-align:center">शेतकरी सही</th>
             </tr></thead>
             <tbody>${rows}</tbody>
             <tfoot><tr>
-                <td colspan="4" style="padding:10px 12px;border:1px solid #e2e8f0;background:#f1f5f9;text-align:right">एकूण ▶</td>
-                <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#e0f2fe;color:#0369a1;text-align:right">${grandLitres > 0 ? grandLitres.toFixed(2) + ' L' : '—'}</td>
-                <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#fef3c7;color:#d97706">Rs.${fmt(grandRefund)}</td>
+                <td colspan="4" style="padding:12px 14px;border:1px solid #cbd5e1;background:#f1f5f9;text-align:right;font-size:1.1rem">एकूण ▶</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;background:#e0f2fe;color:#0369a1;text-align:right;font-weight:800;font-size:1.1rem">${grandLitres > 0 ? grandLitres.toFixed(2) + ' L' : '—'}</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;background:#fef3c7;color:#d97706;font-weight:800;font-size:1.15rem">Rs.${fmt(grandRefund)}</td>
                 ${interestGrandTd}
-                <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#dcfce7;color:#15803d">Rs.${fmt(grandPaid)}</td>
-                <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f1f5f9"></td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;background:#dcfce7;color:#15803d;font-weight:800;font-size:1.25rem">Rs.${fmt(grandPaid)}</td>
+                <td style="padding:12px 14px;border:1px solid #cbd5e1;background:#f1f5f9"></td>
             </tr></tfoot>
         </table>
-        <div class="footer">DudhSakha Dairy Management • ठेव परतावा नोंद</div>
+        <div class="footer">${dairyTitle} • DudhSakha Dairy Management • ठेव परतावा नोंद</div>
         </body></html>`;
 
         await printHtml(html);
@@ -890,59 +897,197 @@ export default function ThevManagement({ user }) {
             const milkTo   = selectedPeriodObj?.to   || histToDate;
             const milkMap  = await fetchMilkLitresMap(farmerIds, milkFrom, milkTo);
             const greeting = customGreeting.trim();
+            const dairyLabel = user?.dairy_name || 'DudhSakha';
 
-            const chits = farmerRefundSummary.map((s) => {
-                const litres = milkMap[String(s.farmer_id)] || 0;
-                const interestRow = hasInterest
-                    ? `<tr><td class="lbl">व्याज / बोनस</td><td class="val" style="color:#7c3aed">Rs.${fmt(s.total_interest)}</td></tr>`
-                    : '';
-                return `<div class="chit">
-                    <div class="chit-hdr">
-                        <span style="font-weight:800;font-size:.9rem">DudhSakha</span>
-                        <span style="font-size:.72rem;opacity:.85">ठेव परतावा पावती</span>
-                    </div>
-                    ${greeting ? `<div class="greeting">${greeting}</div>` : ''}
-                    <div class="farmer-row">
-                        <span class="fname">${s.farmer_name}</span>
-                        <span class="fcode">#${s.farmer_code}</span>
-                    </div>
-                    ${s.thev_name ? `<div class="thev-tag">📋 ${s.thev_name}</div>` : ''}
-                    <div class="period">कालावधी: <b>${selectedPeriodLabel}</b></div>
-                    <table class="dt">
-                        <tr><td class="lbl">एकूण दूध</td><td class="val" style="color:#0369a1">${litres > 0 ? litres + ' लिटर' : '—'}</td></tr>
-                        <tr><td class="lbl">परतावा रक्कम</td><td class="val" style="color:#d97706">Rs.${fmt(s.total_refund)}</td></tr>
-                        ${interestRow}
-                        <tr class="total-row"><td style="font-weight:700;padding:5px 4px">एकूण दिलेले</td><td style="font-weight:800;color:#15803d;padding:5px 4px;text-align:right">Rs.${fmt(s.total_paid)}</td></tr>
-                    </table>
-                    <div class="chit-date">तारीख: ${new Date().toLocaleDateString('mr-IN')}</div>
-                </div>`;
+            // Split into pages of 6 chits each for A4 layout (2 cols x 3 rows)
+            const CHITS_PER_PAGE = 6;
+            const pages = [];
+            for (let i = 0; i < farmerRefundSummary.length; i += CHITS_PER_PAGE) {
+                pages.push(farmerRefundSummary.slice(i, i + CHITS_PER_PAGE));
+            }
+
+            const pagesHtml = pages.map((pageChits) => {
+                const chitsInPage = pageChits.map((s) => {
+                    const litres = milkMap[String(s.farmer_id)] || 0;
+                    const interestRow = hasInterest
+                        ? `<tr><td class="lbl">व्याज / बोनस</td><td class="val" style="color:#7c3aed">Rs.${fmt(s.total_interest)}</td></tr>`
+                        : '';
+                    return `<div class="chit">
+                        <div class="chit-hdr">
+                            <div class="dairy-title">${dairyLabel}</div>
+                            <div class="chit-badge">ठेव परतावा पावती</div>
+                        </div>
+                        ${greeting ? `<div class="greeting">${greeting}</div>` : ''}
+                        <div class="chit-body">
+                            <div class="farmer-row">
+                                <span class="fname">${s.farmer_name}</span>
+                                <span class="fcode">#${s.farmer_code}</span>
+                            </div>
+                            ${s.thev_name ? `<div class="thev-tag">📋 ${s.thev_name}</div>` : ''}
+                            <div class="period">कालावधी: <b>${selectedPeriodLabel}</b></div>
+                            <table class="dt">
+                                <tr><td class="lbl">एकूण दूध</td><td class="val" style="color:#0369a1;font-weight:700">${litres > 0 ? litres + ' L' : '—'}</td></tr>
+                                <tr><td class="lbl">परतावा रक्कम</td><td class="val" style="color:#d97706;font-weight:700">Rs.${fmt(s.total_refund)}</td></tr>
+                                ${interestRow}
+                                <tr class="total-row"><td style="font-weight:700;padding:4px 3px">एकूण दिलेले</td><td style="font-weight:800;color:#15803d;padding:4px 3px;text-align:right">Rs.${fmt(s.total_paid)}</td></tr>
+                            </table>
+                        </div>
+                        <div class="chit-footer">
+                            <span>सही: _________</span>
+                            <span>तारीख: ${new Date().toLocaleDateString('mr-IN')}</span>
+                        </div>
+                    </div>`;
+                }).join('');
+
+                return `<div class="page">${chitsInPage}</div>`;
             }).join('');
 
             const html = `<!DOCTYPE html><html lang="mr"><head>
             <meta charset="utf-8">
-            <title>ठेव परतावा चिट्स</title>
+            <title>ठेव परतावा चिट्स - ${dairyLabel}</title>
             <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;600;700;800&family=Noto+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
             <style>
                 *{box-sizing:border-box;margin:0;padding:0}
-                body{font-family:'Noto Sans Devanagari','Noto Sans',Arial,sans-serif;padding:10px;background:#fff}
-                .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-                .chit{border:1.5px dashed #94a3b8;border-radius:10px;padding:0 0 8px;overflow:hidden;break-inside:avoid;page-break-inside:avoid}
-                .chit-hdr{background:#4f46e5;color:#fff;display:flex;justify-content:space-between;align-items:center;padding:7px 12px;margin-bottom:8px}
-                .greeting{background:linear-gradient(90deg,#fef3c7,#fde68a);color:#92400e;font-weight:700;font-size:.82rem;padding:4px 12px;margin:0 8px 8px;border-radius:5px;text-align:center}
-                .farmer-row{display:flex;justify-content:space-between;align-items:baseline;padding:0 12px;margin-bottom:3px}
-                .fname{font-weight:800;font-size:.92rem;color:#1e293b}
-                .fcode{font-size:.73rem;color:#64748b;background:#f1f5f9;padding:1px 6px;border-radius:6px}
-                .thev-tag{font-size:.68rem;color:#4f46e5;font-weight:600;padding:1px 12px 4px;opacity:.9}
-                .period{font-size:.68rem;color:#64748b;padding:0 12px;margin-bottom:6px}
-                .dt{width:calc(100% - 24px);margin:0 12px;border-collapse:collapse;font-size:.82rem}
-                .lbl{padding:3px 4px;color:#64748b}
-                .val{padding:3px 4px;text-align:right;font-weight:600}
-                .total-row{border-top:1px solid #e2e8f0}
-                .chit-date{font-size:.65rem;color:#94a3b8;text-align:right;padding:5px 12px 0}
-                @page{size:A4 landscape;margin:10mm}
-                @media print{body{padding:0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
+                body{font-family:'Noto Sans Devanagari','Noto Sans',Arial,sans-serif;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+                @page{size:A4 portrait;margin:8mm}
+                .page{
+                    width:100%;
+                    height:275mm;
+                    max-height:280mm;
+                    display:grid;
+                    grid-template-columns:repeat(2,1fr);
+                    grid-template-rows:repeat(3,87mm);
+                    gap:6mm;
+                    page-break-after:always;
+                    break-after:page;
+                    box-sizing:border-box;
+                    padding:0;
+                }
+                .page:last-child{page-break-after:auto;break-after:auto}
+                .chit{
+                    border:1.5px dashed #94a3b8;
+                    border-radius:7px;
+                    height:87mm;
+                    max-height:87mm;
+                    overflow:hidden;
+                    display:flex;
+                    flex-direction:column;
+                    justify-content:space-between;
+                    background:#fff;
+                    break-inside:avoid;
+                    page-break-inside:avoid;
+                }
+                .chit-hdr{
+                    background:#4f46e5;
+                    color:#fff;
+                    display:flex;
+                    justify-content:space-between;
+                    align-items:center;
+                    padding:5px 8px;
+                }
+                .dairy-title{
+                    font-weight:800;
+                    font-size:.9rem;
+                    letter-spacing:-0.2px;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    max-width:68%;
+                }
+                .chit-badge{
+                    font-size:.65rem;
+                    background:rgba(255,255,255,0.22);
+                    padding:2px 6px;
+                    border-radius:4px;
+                    white-space:nowrap;
+                    font-weight:600;
+                }
+                .greeting{
+                    background:linear-gradient(90deg,#fef3c7,#fde68a);
+                    color:#92400e;
+                    font-weight:700;
+                    font-size:.72rem;
+                    padding:2px 8px;
+                    margin:3px 6px 0;
+                    border-radius:4px;
+                    text-align:center;
+                }
+                .chit-body{
+                    padding:4px 8px;
+                    flex:1;
+                    display:flex;
+                    flex-direction:column;
+                    justify-content:space-around;
+                }
+                .farmer-row{
+                    display:flex;
+                    justify-content:space-between;
+                    align-items:baseline;
+                    margin-bottom:1px;
+                }
+                .fname{
+                    font-weight:800;
+                    font-size:.88rem;
+                    color:#0f172a;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    max-width:75%;
+                }
+                .fcode{
+                    font-size:.72rem;
+                    font-weight:700;
+                    color:#4338ca;
+                    background:#e0e7ff;
+                    padding:1px 6px;
+                    border-radius:4px;
+                }
+                .thev-tag{
+                    font-size:.68rem;
+                    color:#4f46e5;
+                    font-weight:600;
+                    margin-bottom:1px;
+                }
+                .period{
+                    font-size:.68rem;
+                    color:#64748b;
+                    margin-bottom:2px;
+                }
+                .dt{
+                    width:100%;
+                    border-collapse:collapse;
+                    font-size:.8rem;
+                }
+                .lbl{
+                    padding:2px 3px;
+                    color:#475569;
+                }
+                .val{
+                    padding:2px 3px;
+                    text-align:right;
+                    font-weight:600;
+                }
+                .total-row{
+                    border-top:1.5px solid #cbd5e1;
+                    font-size:.85rem;
+                }
+                .chit-footer{
+                    display:flex;
+                    justify-content:space-between;
+                    align-items:center;
+                    font-size:.65rem;
+                    color:#64748b;
+                    padding:4px 8px 5px;
+                    border-top:1px solid #f1f5f9;
+                    background:#f8fafc;
+                }
+                @media print{
+                    body{padding:0}
+                    .page{page-break-after:always;break-after:page}
+                    .page:last-child{page-break-after:auto;break-after:auto}
+                }
             </style></head><body>
-            <div class="grid">${chits}</div>
+            ${pagesHtml}
             </body></html>`;
 
             await printHtml(html);

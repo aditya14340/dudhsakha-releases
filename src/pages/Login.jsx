@@ -185,7 +185,7 @@ export default function Login({ onLogin }) {
             </form>
 
             <div className="login-footer">
-              <p>Powered by DudhSakha v6.0.3</p>
+              <p>Powered by DudhSakha v6.0.4</p>
             </div>
           </div>
         </div>

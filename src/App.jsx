@@ -405,7 +405,7 @@ function App() {
   }, [user]);
 
   useEffect(() => {
-    const APP_VERSION = '6.0.3';
+    const APP_VERSION = '6.0.4';
     const savedVersion = localStorage.getItem('app_version');
 
     if (savedVersion !== APP_VERSION) {

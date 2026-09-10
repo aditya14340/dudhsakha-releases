@@ -1,7 +1,7 @@
 {
     "name":  "milk-management-system",
     "private":  true,
-    "version":  "6.0.3",
+    "version":  "6.0.4",
     "description":  "Milk Management System for Local Dairy",
     "author":  "Aditya",
     "main":  "electron/main.js",
