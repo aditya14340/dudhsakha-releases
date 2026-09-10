@@ -24,12 +24,28 @@ function Billing({ user }) {
     const { t, i18n } = useTranslation();
     const { showAlert, showConfirm, AlertComponent } = useAlert();
     const [dateRangeType, setDateRangeType] = useState(() => {
-        const today = new Date().getDate();
-        if (today <= 10) return '1-10';
-        if (today <= 20) return '11-20';
-        return '21-30';
+        const day = new Date().getDate();
+        // Default to the PREVIOUS completed billing period
+        if (day <= 10) return '21-30';   // prev period: 21–end of last month
+        if (day <= 20) return '1-10';    // prev period: 1–10 of this month
+        return '11-20';                  // prev period: 11–20 of this month
     });
-    const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
+    const [selectedMonth, setSelectedMonth] = useState(() => {
+        const today = new Date();
+        const day = today.getDate();
+        // If today is 1–10, the previous period belongs to LAST month
+        if (day <= 10) {
+            const prevMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+            // Use local getters (not toISOString) to avoid UTC timezone shift
+            const y = prevMonth.getFullYear();
+            const m = String(prevMonth.getMonth() + 1).padStart(2, '0');
+            return `${y}-${m}`;
+        }
+        const y = today.getFullYear();
+        const m = String(today.getMonth() + 1).padStart(2, '0');
+        return `${y}-${m}`;
+    });
+
     const [customStartDate, setCustomStartDate] = useState('');
     const [customEndDate, setCustomEndDate] = useState('');
 
@@ -174,8 +190,12 @@ function Billing({ user }) {
                             pdfRef: pdfRef.current
                         });
                     } else {
-                        pdfRef.current.save(pdfJob.fileName || 'Report.pdf');
-                        showAlert(t('billing.messages.downloadSuccess', { defaultValue: 'Download Started' }), 'Success', 'success');
+                        // Try to open in system PDF viewer (Chrome/Acrobat) via open-pdf IPC.
+                        // Falls back to print-pdf (native print dialog) if app hasn't been restarted yet.
+                        const pdfBase64 = pdfRef.current.output('datauristring').split(',')[1];
+                        window.electron.invoke('open-pdf', pdfBase64).catch(() => {
+                            window.electron.invoke('print-pdf', pdfBase64);
+                        });
                     }
                     setPdfJob(null);
                     setPdfLoading(false);
@@ -549,7 +569,9 @@ function Billing({ user }) {
     useEffect(() => {
         loadInitialData();
         fetchAllBillPayments();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []); // Empty dependency array for initial load
+
 
     useEffect(() => {
         if (farmers.length > 0) {
@@ -654,6 +676,22 @@ function Billing({ user }) {
             }));
 
             setDeductions(formattedDeductions);
+
+            // ── Auto-repair stale Thev balances in background ─────────────────
+            // Runs after bill data is loaded so it never blocks UI rendering.
+            // If any account balance was out of sync, reload thev accounts so
+            // the bill generation uses correct Thev deduction amounts.
+            window.api.repairAllThevBalances(user?.dairy_id)
+                .then(result => {
+                    if (result.repaired > 0) {
+                        console.log(`[Billing] Auto-repaired ${result.repaired} stale Thev balance(s) — reloading`);
+                        getFarmerThevAccounts(user?.dairy_id)
+                            .then(fresh => setThevAccounts(fresh || []))
+                            .catch(() => { });
+                    }
+                })
+                .catch(() => { }); // Non-blocking — billing still works with loaded data
+            // ──────────────────────────────────────────────────────────────────
         } catch (error) {
             console.error('Error loading data:', error);
         } finally {
@@ -845,9 +883,17 @@ function Billing({ user }) {
                         // means it's a DIFFERENT fully-completed deduction sharing the same
                         // name — using it would wrongly set prevBalance to 0.
                         if (!paidDed) {
-                            const nameFallback = paidDeductions.find(
-                                d => d.name === (deduction.deduction_name || deduction.name)
-                            );
+                            const targetName = deduction.deduction_name || deduction.name;
+                            const nameMatches = paidDeductions.filter(d => d.name === targetName);
+                            // When multiple deductions share the same name (e.g. two 'पेंड'),
+                            // prefer the one whose ID matches this deduction's ID.
+                            // If no ID match among duplicates, skip name fallback (ambiguous).
+                            let nameFallback = null;
+                            if (nameMatches.length === 1) {
+                                nameFallback = nameMatches[0];
+                            } else if (nameMatches.length > 1) {
+                                nameFallback = nameMatches.find(d => d.id != null && d.id === deduction.id) || null;
+                            }
                             const nameFallbackRem = parseFloat(nameFallback?.remaining_balance ?? nameFallback?.remaining ?? -1);
                             if (nameFallback && nameFallbackRem > 0) {
                                 paidDed = nameFallback;
@@ -903,7 +949,7 @@ function Billing({ user }) {
         let thevShowBalPrefs = {};
         try {
             thevShowBalPrefs = JSON.parse(localStorage.getItem(`thev_show_bal_${user?.dairy_id}`) || '{}');
-        } catch(e) { /* ignore */ }
+        } catch (e) { /* ignore */ }
 
         const thevEntries = farmerThevAccts2.map(thev => {
             const accountId = String(thev.id);
@@ -1030,7 +1076,11 @@ function Billing({ user }) {
             const override = overrides[d.id] || {};
             const isEnabled = override.enabled !== undefined ? override.enabled : true;
             if (!isEnabled) {
-                effective.push({ ...d, effectiveAmount: 0, isEnabled: false, isCustom: false });
+                // When disabled, remaining = prevBalance (nothing deducted this period)
+                const disabledRemaining = d.prevBalance && parseFloat(d.prevBalance) > 0
+                    ? parseFloat(d.prevBalance).toFixed(2)
+                    : (d.remaining ?? '');
+                effective.push({ ...d, remaining: disabledRemaining, effectiveAmount: 0, isEnabled: false, isCustom: false });
                 return;
             }
 
@@ -1046,9 +1096,16 @@ function Billing({ user }) {
                 : Math.round(amount * 100) / 100;
 
             runningDeduction += amount;
+            // Recalculate remaining live — prevBalance minus what was actually deducted.
+            // This overrides the stale pre-computed value from calculateBillForFarmer
+            // so the display is always correct after toggle/custom-amount changes.
+            const liveRemaining = d.prevBalance && parseFloat(d.prevBalance) > 0
+                ? Math.max(0, parseFloat(d.prevBalance) - amount).toFixed(2)
+                : (d.remaining ?? '');
             effective.push({
                 ...d,
                 effectiveAmount: amount,
+                remaining: liveRemaining,
                 isEnabled: true,
                 isCustom: override.customAmount !== null && override.customAmount !== undefined
             });
@@ -1527,9 +1584,10 @@ function Billing({ user }) {
     const summary = getTotalSummary();
 
     return (
-        <div style={{ color: 'black',  padding: '16px 32px', maxWidth: '1600px', margin: '0 auto', background: 'transparent', minHeight: '100%'  }}>
+        <div style={{ color: 'black', padding: '16px 32px', maxWidth: '1600px', margin: '0 auto', background: 'transparent', minHeight: '100%' }}>
             {/* Header */}
-            <div style={{ color: 'black', 
+            <div style={{
+                color: 'black',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
@@ -1537,7 +1595,7 @@ function Billing({ user }) {
                 gap: '24px',
                 paddingBottom: '12px',
                 borderBottom: '1px solid #f1f5f9'
-             }}>
+            }}>
                 <div>
                     <h1 style={{
                         fontSize: '28px',
@@ -1556,17 +1614,18 @@ function Billing({ user }) {
             </div>
 
             {/* Controls Card */}
-            <div style={{ color: 'black', 
+            <div style={{
+                color: 'black',
                 background: 'white',
                 borderRadius: '20px',
                 padding: '28px',
                 marginBottom: '28px',
                 boxShadow: '0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.05)'
-             }}>
-                <div style={{ color: 'black',  display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '24px', alignItems: 'end'  }}>
+            }}>
+                <div style={{ color: 'black', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '24px', alignItems: 'end' }}>
                     <div>
                         <label style={{ display: 'block', fontSize: '14px', fontWeight: '600', color: '#374151', marginBottom: '8px' }}>{t('farmers.searchPlaceholder', { defaultValue: 'Search Farmer' })}</label>
-                        <div style={{ color: 'black',  position: 'relative'  }}>
+                        <div style={{ color: 'black', position: 'relative' }}>
                             <Search size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#9ca3af' }} />
                             <input
                                 type="text"
@@ -1665,8 +1724,8 @@ function Billing({ user }) {
                         </>
                     )}
 
-                    <div style={{ color: 'black',  display: 'flex', gap: '12px', alignItems: 'center'  }}>
-                        <div style={{ color: 'black',  display: 'flex', gap: '1px', background: '#e2e8f0', padding: '2px', borderRadius: '14px', border: '1px solid #e2e8f0'  }}>
+                    <div style={{ color: 'black', display: 'flex', gap: '12px', alignItems: 'center' }}>
+                        <div style={{ color: 'black', display: 'flex', gap: '1px', background: '#e2e8f0', padding: '2px', borderRadius: '14px', border: '1px solid #e2e8f0' }}>
                             <button
                                 onClick={() => handleExport(false)}
                                 disabled={loading || pdfLoading}
@@ -1680,9 +1739,10 @@ function Billing({ user }) {
                                     boxShadow: '0 4px 12px rgba(79, 70, 229, 0.2)'
                                 }}
                             >
-                                <Download size={18} />
-                                {pdfLoading ? t('common.loading') : t('billing.buttons.downloadRegister')}
+                                <Printer size={18} />
+                                {pdfLoading ? t('common.loading') : t('billing.buttons.openAndPrintRegister', { defaultValue: 'Open & Print Register' })}
                             </button>
+
                             <button
                                 onClick={() => handleExport(true)}
                                 disabled={loading || pdfLoading}
@@ -1750,8 +1810,8 @@ function Billing({ user }) {
                     border: '1px solid black',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                 }}>
-                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px'  }}>
-                        <div style={{ 
+                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                        <div style={{
                             width: '56px',
                             height: '56px',
                             borderRadius: '14px',
@@ -1760,7 +1820,7 @@ function Billing({ user }) {
                             alignItems: 'center',
                             justifyContent: 'center',
                             color: '#4338ca'
-                         }}>
+                        }}>
                             <Users size={28} />
                         </div>
                     </div>
@@ -1777,8 +1837,8 @@ function Billing({ user }) {
                     border: '1px solid black',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                 }}>
-                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px'  }}>
-                        <div style={{ 
+                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                        <div style={{
                             width: '56px',
                             height: '56px',
                             borderRadius: '14px',
@@ -1787,7 +1847,7 @@ function Billing({ user }) {
                             alignItems: 'center',
                             justifyContent: 'center',
                             color: '#be185d'
-                         }}>
+                        }}>
                             <Droplets size={28} />
                         </div>
                     </div>
@@ -1804,8 +1864,8 @@ function Billing({ user }) {
                     border: '1px solid black',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                 }}>
-                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px'  }}>
-                        <div style={{ 
+                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                        <div style={{
                             width: '56px',
                             height: '56px',
                             borderRadius: '14px',
@@ -1814,7 +1874,7 @@ function Billing({ user }) {
                             alignItems: 'center',
                             justifyContent: 'center',
                             color: '#c2410c'
-                         }}>
+                        }}>
                             <IndianRupee size={28} />
                         </div>
                     </div>
@@ -1831,8 +1891,8 @@ function Billing({ user }) {
                     border: '1px solid black',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                 }}>
-                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px'  }}>
-                        <div style={{ 
+                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                        <div style={{
                             width: '56px',
                             height: '56px',
                             borderRadius: '14px',
@@ -1841,7 +1901,7 @@ function Billing({ user }) {
                             alignItems: 'center',
                             justifyContent: 'center',
                             color: '#047857'
-                         }}>
+                        }}>
                             <IndianRupee size={28} />
                         </div>
                     </div>
@@ -1866,8 +1926,8 @@ function Billing({ user }) {
                                 border: paidFilter === filter ? 'none' : '1px solid #e2e8f0',
                                 background: paidFilter === filter
                                     ? (filter === 'paid' ? 'linear-gradient(135deg, #10b981, #059669)' :
-                                       filter === 'unpaid' ? 'linear-gradient(135deg, #f59e0b, #d97706)' :
-                                       'linear-gradient(135deg, #667eea, #764ba2)')
+                                        filter === 'unpaid' ? 'linear-gradient(135deg, #f59e0b, #d97706)' :
+                                            'linear-gradient(135deg, #667eea, #764ba2)')
                                     : 'white',
                                 color: paidFilter === filter ? 'white' : '#6b7280',
                                 fontSize: '14px', fontWeight: '600', cursor: 'pointer',
@@ -1876,8 +1936,8 @@ function Billing({ user }) {
                             }}
                         >
                             {filter === 'all' ? t('billing.filter.all') :
-                             filter === 'paid' ? `✓ ${t('billing.filter.paid')}` :
-                             `○ ${t('billing.filter.unpaid')}`}
+                                filter === 'paid' ? `✓ ${t('billing.filter.paid')}` :
+                                    `○ ${t('billing.filter.unpaid')}`}
                             {filter === 'all' && ` (${billData.length})`}
                             {filter === 'paid' && ` (${billData.filter(b => billPayments.some(p => p.farmer_id === b.farmer_id)).length})`}
                             {filter === 'unpaid' && ` (${billData.filter(b => !billPayments.some(p => p.farmer_id === b.farmer_id)).length})`}
@@ -1891,9 +1951,9 @@ function Billing({ user }) {
                 {/* ── Milk Type ── */}
                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                     {[
-                        { key: 'all',     label: t('billing.filter.allMilk'),     emoji: '🥛', grad: 'linear-gradient(135deg,#667eea,#764ba2)' },
-                        { key: 'buffalo', label: t('billing.filter.buffalo'),     emoji: '🐃', grad: 'linear-gradient(135deg,#3b82f6,#1d4ed8)' },
-                        { key: 'cow',     label: t('billing.filter.cow'),         emoji: '🐄', grad: 'linear-gradient(135deg,#f59e0b,#d97706)' },
+                        { key: 'all', label: t('billing.filter.allMilk'), emoji: '🥛', grad: 'linear-gradient(135deg,#667eea,#764ba2)' },
+                        { key: 'buffalo', label: t('billing.filter.buffalo'), emoji: '🐃', grad: 'linear-gradient(135deg,#3b82f6,#1d4ed8)' },
+                        { key: 'cow', label: t('billing.filter.cow'), emoji: '🐄', grad: 'linear-gradient(135deg,#f59e0b,#d97706)' },
                     ].map(({ key, label, emoji, grad }) => {
                         const count = key === 'all'
                             ? billData.length
@@ -1932,14 +1992,14 @@ function Billing({ user }) {
             }}>
                 {
                     loading ? (
-                        <div style={{ color: 'black',  padding: '60px'  }} > <Loader /></div >
+                        <div style={{ color: 'black', padding: '60px' }} > <Loader /></div >
                     ) : filteredBillData.length === 0 ? (
-                        <div style={{ color: 'black',  padding: '60px', textAlign: 'center'  }}>
+                        <div style={{ color: 'black', padding: '60px', textAlign: 'center' }}>
                             <FileText size={48} style={{ margin: '0 auto 16px', opacity: 0.2, color: '#9ca3af' }} />
                             <p style={{ color: '#9ca3af', fontSize: '15px' }}>{t('billing.noData')}</p>
                         </div>
                     ) : (
-                        <div style={{ color: 'black',  overflowX: 'auto'  }}>
+                        <div style={{ color: 'black', overflowX: 'auto' }}>
                             <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
                                 <thead>
                                     <tr style={{ background: '#f1f5f9', borderBottom: '2px solid #e2e8f0' }}>
@@ -1963,7 +2023,7 @@ function Billing({ user }) {
                                                 background: index % 2 === 0 ? 'white' : '#fafafa'
                                             }}>
                                                 <td style={{ padding: '20px 24px' }}>
-                                                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '12px'  }}>
+                                                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '12px' }}>
                                                         <button
                                                             onClick={() => toggleRowExpansion(bill.farmer_id)}
                                                             style={{
@@ -1976,26 +2036,27 @@ function Billing({ user }) {
                                                         >
                                                             {expandedRows.includes(bill.farmer_id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
                                                         </button>
-                                                        <span style={{ fontWeight: '700', color: '#111827', fontSize: '15px'  }}>{formatLocaleNum(bill.farmer_code)}</span>
+                                                        <span style={{ fontWeight: '700', color: '#111827', fontSize: '15px' }}>{formatLocaleNum(bill.farmer_code)}</span>
                                                     </div>
                                                 </td>
                                                 <td style={{ padding: '20px 24px', fontSize: '15px', fontWeight: '600', color: '#111827' }}>{bill.farmer_name}</td>
                                                 <td style={{ padding: '20px 24px', fontSize: '14px', color: '#6b7280' }}>{formatLocaleNum(bill.phone)}</td>
                                                 <td style={{ padding: '20px 24px', fontSize: '15px', fontWeight: '600', color: '#111827' }}>{formatLocaleNum(bill.total_quantity)} L</td>
-                                                <td style={{ color: 'black',  padding: '20px 24px', textAlign: 'center'  }}>
-                                                    <span style={{ padding: '6px 14px', background: '#ede9fe', color: '#5b21b6',
+                                                <td style={{ color: 'black', padding: '20px 24px', textAlign: 'center' }}>
+                                                    <span style={{
+                                                        padding: '6px 14px', background: '#ede9fe', color: '#5b21b6',
                                                         borderRadius: '12px',
                                                         fontSize: '14px',
                                                         fontWeight: '600'
-                                                     }}>{formatLocaleNum(bill.collection_count)}</span>
+                                                    }}>{formatLocaleNum(bill.collection_count)}</span>
                                                 </td>
                                                 <td style={{ padding: '20px 24px', fontSize: '16px', fontWeight: '700', color: '#111827', textAlign: 'right' }}>₹{formatLocaleNum(bill.total_amount)}</td>
-                                                <td style={{ padding: '20px 24px', fontSize: '15px', fontWeight: '700', color: '#dc2626', textAlign: 'right'  }}>
+                                                <td style={{ padding: '20px 24px', fontSize: '15px', fontWeight: '700', color: '#dc2626', textAlign: 'right' }}>
                                                     {bill.total_deduction > 0 ? `₹${formatLocaleNum(bill.total_deduction)}` : '-'}
                                                 </td>
-                                                <td style={{ padding: '20px 24px', fontSize: '17px', fontWeight: '700', color: '#059669', textAlign: 'right'  }}>₹{formatLocaleNum(bill.net_amount)}</td>
+                                                <td style={{ padding: '20px 24px', fontSize: '17px', fontWeight: '700', color: '#059669', textAlign: 'right' }}>₹{formatLocaleNum(bill.net_amount)}</td>
                                                 <td style={{ padding: '20px 24px' }}>
-                                                    <div style={{ color: 'black',  display: 'flex', gap: '8px', justifyContent: 'center'  }}>
+                                                    <div style={{ color: 'black', display: 'flex', gap: '8px', justifyContent: 'center' }}>
                                                         <button
                                                             onClick={() => handleViewBill(bill)}
                                                             style={{
@@ -2071,9 +2132,9 @@ function Billing({ user }) {
                                             {
                                                 expandedRows.includes(bill.farmer_id) && (
                                                     <tr style={{ background: '#f9fafb' }}>
-                                                        <td colSpan="9" style={{ color: 'black',  padding: '24px'  }}>
+                                                        <td colSpan="9" style={{ color: 'black', padding: '24px' }}>
                                                             <h4 style={{ fontSize: '16px', fontWeight: '700', color: 'black', marginBottom: '16px' }}>{t('billing.details.title')}</h4>
-                                                            <div style={{ color: 'black',  overflowX: 'auto'  }}>
+                                                            <div style={{ color: 'black', overflowX: 'auto' }}>
                                                                 <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, background: 'white', borderRadius: '12px', overflow: 'hidden' }}>
                                                                     <thead>
                                                                         <tr style={{ background: '#f3f4f6' }}>
@@ -2091,15 +2152,15 @@ function Billing({ user }) {
                                                                         {bill.collections.map((col, idx) => (
                                                                             <tr key={idx} style={{ borderBottom: '1px solid #f3f4f6' }}>
                                                                                 <td style={{ padding: '14px 16px', fontSize: '14px', color: 'black' }}>{new Date(col.date).toLocaleDateString('en-IN')}</td>
-                                                                                <td style={{ color: 'black',  padding: '14px 16px'  }}>
-                                                                                    <span style={{ 
+                                                                                <td style={{ color: 'black', padding: '14px 16px' }}>
+                                                                                    <span style={{
                                                                                         padding: '4px 10px',
                                                                                         background: col.shift === 'Morning' ? '#fef3c7' : '#dbeafe',
                                                                                         color: col.shift === 'Morning' ? '#92400e' : '#1e40af',
                                                                                         borderRadius: '8px',
                                                                                         fontSize: '13px',
                                                                                         fontWeight: '500'
-                                                                                     }}>{col.shift}</span>
+                                                                                    }}>{col.shift}</span>
                                                                                 </td>
                                                                                 <td style={{ padding: '14px 16px', fontSize: '14px', color: 'black' }}>{col.milk_type}</td>
                                                                                 <td style={{ padding: '14px 16px', fontSize: '14px', color: 'black', textAlign: 'right', fontWeight: '600' }}>{formatLocaleNum(col.quantity)}</td>
@@ -2137,9 +2198,9 @@ function Billing({ user }) {
                         fontSize: '12px'
                     }}>
                         {/* Bill Header */}
-                        <div style={{ color: 'black',  textAlign: 'center', marginBottom: '10px', borderBottom: '1px solid black', paddingBottom: '5px'  }}>
+                        <div style={{ color: 'black', textAlign: 'center', marginBottom: '10px', borderBottom: '1px solid black', paddingBottom: '5px' }}>
                             <h1 style={{ margin: '0', fontSize: '20px', fontWeight: 'bold' }}>{printBillData.dairyName}</h1>
-                            <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', marginTop: '10px', fontSize: '14px', fontWeight: 'bold'  }}>
+                            <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', marginTop: '10px', fontSize: '14px', fontWeight: 'bold' }}>
                                 <span>{t('farmers.table.code')}: {printBillData.farmerCode} &nbsp;&nbsp; {printBillData.farmerName}</span>
                                 <span>{t('billing.billPrint.title')} &nbsp;&nbsp; {printBillData.billPeriod}</span>
                                 <span>{t('billing.billPrint.date')}: {printBillData.billDate}</span>
@@ -2167,81 +2228,81 @@ function Billing({ user }) {
                             </colgroup>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid black' }}>
-                                    <th rowSpan="2" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'top', lineHeight: '1.2', textAlign: 'center', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.date')}</th>
-                                    <th colSpan="5" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center'  }}>{t('billing.billPrint.morning')}</th>
-                                    <th colSpan="5" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center'  }}>{t('billing.billPrint.evening')}</th>
-                                    <th colSpan="4" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center'  }}>{t('billing.billPrint.deduction')}</th>
+                                    <th rowSpan="2" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'top', lineHeight: '1.2', textAlign: 'center', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.date')}</th>
+                                    <th colSpan="5" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center' }}>{t('billing.billPrint.morning')}</th>
+                                    <th colSpan="5" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center' }}>{t('billing.billPrint.evening')}</th>
+                                    <th colSpan="4" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center' }}>{t('billing.billPrint.deduction')}</th>
                                 </tr>
                                 <tr style={{ borderBottom: '1px solid black', fontSize: '10px' }}>
                                     {/* Morning Cols */}
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.type')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.fat')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.snf')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.rate')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.amount')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.type')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.fat')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.snf')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.rate')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.amount')}</th>
                                     {/* Evening Cols */}
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.type')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.fat')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.snf')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.rate')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.amount')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.type')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.fat')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.snf')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.rate')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.amount')}</th>
                                     {/* Deduction Cols */}
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.deductionName')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.initial')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.amount')}</th>
-                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden'  }}>{t('billing.billPrint.payable')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.deductionName')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.initial')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.amount')}</th>
+                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', wordBreak: 'break-word', overflow: 'hidden' }}>{t('billing.billPrint.payable')}</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {printBillData.rows.map((row, idx) => (
                                     <tr key={idx} style={{ borderBottom: '1px solid black' }}>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center'  }}>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center' }}>
                                             {row.date ? new Date(row.date).toLocaleDateString('en-GB').slice(0, 5) : ''}
                                         </td>
 
                                         {/* Morning Data */}
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center'  }}>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center' }}>
                                             {row.morning?.milk_type === 'Cow' ? (i18n.language === 'mr' ? 'गाय' : (i18n.language === 'hi' ? 'गाय' : 'Cow')) :
                                                 (row.morning?.milk_type === 'Buffalo' ? (i18n.language === 'mr' ? 'म्हैस' : (i18n.language === 'hi' ? 'भैंस' : 'Buffalo')) : '')}
                                         </td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center'  }}>{row.morning?.fat}</td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center'  }}>{row.morning?.snf}</td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center'  }}>{row.morning?.rate}</td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right'  }}>{row.morning?.amount}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center' }}>{row.morning?.fat}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center' }}>{row.morning?.snf}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center' }}>{row.morning?.rate}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right' }}>{row.morning?.amount}</td>
 
                                         {/* Evening Data */}
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center'  }}>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center' }}>
                                             {row.evening?.milk_type === 'Cow' ? (i18n.language === 'mr' ? 'गाय' : (i18n.language === 'hi' ? 'गाय' : 'Cow')) :
                                                 (row.evening?.milk_type === 'Buffalo' ? (i18n.language === 'mr' ? 'म्हैस' : (i18n.language === 'hi' ? 'भैंस' : 'Buffalo')) : '')}
                                         </td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center'  }}>{row.evening?.fat}</td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center'  }}>{row.evening?.snf}</td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center'  }}>{row.evening?.rate}</td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right'  }}>{row.evening?.amount}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center' }}>{row.evening?.fat}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center' }}>{row.evening?.snf}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'center' }}>{row.evening?.rate}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right' }}>{row.evening?.amount}</td>
 
                                         {/* Deduction Data */}
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', fontSize: '10px'  }}>{row.deduction?.name}</td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right'  }}>{row.deduction?.total_target || '-'}</td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right'  }}>{row.deduction?.amount}</td>
-                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right'  }}>{row.deduction?.remaining ? formatLocaleNum(formatMoney(row.deduction.remaining, 2, { truncate: true })) : '-'}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', fontSize: '10px' }}>{row.deduction?.name}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right' }}>{row.deduction?.total_target || '-'}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right' }}>{row.deduction?.amount}</td>
+                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right' }}>{row.deduction?.remaining ? formatLocaleNum(formatMoney(row.deduction.remaining, 2, { truncate: true })) : '-'}</td>
                                     </tr>
                                 ))}
                                 {/* Filler rows if needed to fill page or fixed height */}
                             </tbody>
                             <tfoot>
                                 <tr style={{ fontWeight: 'bold', background: '#f0f0f0' }}>
-                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>{t('billing.billPrint.total')}</td>
+                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>{t('billing.billPrint.total')}</td>
 
                                     {/* Morning Totals */}
-                                    <td colSpan="4" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black'  }}></td>
-                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right'  }}></td>
+                                    <td colSpan="4" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black' }}></td>
+                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right' }}></td>
 
                                     {/* Evening Totals */}
-                                    <td colSpan="4" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black'  }}></td>
-                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right'  }}></td>
+                                    <td colSpan="4" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black' }}></td>
+                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '2px', textAlign: 'right' }}></td>
 
-                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'right'  }}>{t('billing.table.gross')}: {printBillData.summary.totalAmount}</td>
-                                    <td colSpan="2" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'right'  }}>{t('billing.billPrint.deduction')}: {printBillData.summary.totalDeduction}</td>
+                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'right' }}>{t('billing.table.gross')}: {printBillData.summary.totalAmount}</td>
+                                    <td colSpan="2" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'right' }}>{t('billing.billPrint.deduction')}: {printBillData.summary.totalDeduction}</td>
                                     {(printBillData.summary.thevEntries || []).length > 0
                                         ? (printBillData.summary.thevEntries).map((te, tIdx) => (
                                             <td key={tIdx} style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'right', fontSize: '11px' }}>
@@ -2254,18 +2315,18 @@ function Billing({ user }) {
                                             </td>
                                         )
                                     }
-                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'right'  }}>{printBillData.summary.netAmount}</td>
+                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'right' }}>{printBillData.summary.netAmount}</td>
                                 </tr>
                             </tfoot>
                         </table>
 
                         {/* Footer / Bank Slip */}
-                        <div style={{ color: 'black',  marginTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center'  }}>
-                            <div style={{ color: 'black',  textAlign: 'center'  }}>
+                        <div style={{ color: 'black', marginTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ color: 'black', textAlign: 'center' }}>
                                 <p style={{ marginTop: '40px', borderTop: '1px solid black', width: '150px' }}>{t('billing.billPrint.signature')}</p>
                             </div>
 
-                            <div style={{ color: 'black',  textAlign: 'right'  }}>
+                            <div style={{ color: 'black', textAlign: 'right' }}>
                                 <p style={{ fontSize: '16px', fontWeight: 'bold' }}>{t('billing.billPrint.grandTotal')}: ₹{printBillData.summary.netAmount}</p>
                             </div>
                         </div>
@@ -2278,11 +2339,12 @@ function Billing({ user }) {
             {/* Hidden PDF Render Target (Unified) */}
             {
                 pdfJob && pdfJob.chunks && pdfJob.chunks[pdfJob.currentChunk] && (
-                    <div style={{ color: 'black', 
+                    <div style={{
+                        color: 'black',
                         position: 'fixed', left: '-14000px', top: 0,
                         width: pdfJob.type === 'register' ? '1123px' : '794px',
                         pointerEvents: 'none', zIndex: -1000, opacity: 0, overflow: 'visible'
-                     }}>
+                    }}>
                         {pdfJob.type === 'register' ? (
                             <div id="pdf-render-target" className="report-page" style={{
                                 width: '1123px',
@@ -2297,9 +2359,9 @@ function Billing({ user }) {
                                     <h1 style={{ margin: '0 0 2px 0', fontSize: '22px', textAlign: 'center', fontWeight: 'bold', textTransform: 'uppercase' }}>{pdfJob.meta.dairyName}</h1>
                                     <h2 style={{ margin: '0 0 4px 0', fontSize: '16px', textAlign: 'center', fontWeight: 'normal', textDecoration: 'underline' }}>{pdfJob.meta.title}</h2>
 
-                                    <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', fontSize: '13px', fontWeight: 'bold'  }}>
+                                    <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', fontSize: '13px', fontWeight: 'bold' }}>
                                         <span>{pdfJob.meta.subtitle}</span>
-                                        <div style={{ color: 'black',  textAlign: 'right'  }}>
+                                        <div style={{ color: 'black', textAlign: 'right' }}>
                                             {pdfJob.meta.date} <br />
                                             {t('billing.page', { defaultValue: 'Page' })} {pdfJob.currentChunk + 1} / {pdfJob.chunks.length}
                                         </div>
@@ -2308,7 +2370,8 @@ function Billing({ user }) {
 
                                 {pdfJob.chunks[pdfJob.currentChunk].sectionTitle && (
                                     <div
-                                        style={{ color: 'black', 
+                                        style={{
+                                            color: 'black',
                                             border: '1px solid black',
                                             borderRadius: '4px',
                                             padding: '6px 10px',
@@ -2317,14 +2380,14 @@ function Billing({ user }) {
                                             fontSize: '14px',
                                             textAlign: 'center',
                                             marginBottom: '6px'
-                                         }}
+                                        }}
                                     >
                                         {pdfJob.chunks[pdfJob.currentChunk].sectionTitle}
                                     </div>
                                 )}
 
                                 {/* Register Table — height grows with rows (no blank last page) */}
-                                <div style={{ color: 'black',  width: '100%'  }}>
+                                <div style={{ color: 'black', width: '100%' }}>
                                     <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: '12px', borderTop: '1px solid black', borderLeft: '1px solid black', tableLayout: 'fixed' }}>
                                         <colgroup>
                                             <col style={{ width: '4%' }} />{/* Farmer code */}
@@ -2339,38 +2402,38 @@ function Billing({ user }) {
                                         </colgroup>
                                         <thead>
                                             <tr style={{ background: 'transparent', textAlign: 'center', fontWeight: 'bold', fontSize: '13px' }}>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden'  }}>{t('register.farmerCode')}</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'left', overflow: 'hidden'  }}>{t('register.name')}</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden'  }}>सका. लि.</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden'  }}>सका. रक्कम</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden'  }}>सायं. लि.</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden'  }}>सायं. रक्कम</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', fontWeight: 'bold', overflow: 'hidden'  }}>एकूण लि.</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', fontWeight: 'bold', overflow: 'hidden'  }}>एकूण रक्कम</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden'  }}>कपात तपशील</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden'  }}>एकूण कपात</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden'  }}>निव्वळ अदा</th>
-                                                <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden'  }}>सही</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden' }}>{t('register.farmerCode')}</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'left', overflow: 'hidden' }}>{t('register.name')}</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden' }}>सका. लि.</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden' }}>सका. रक्कम</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden' }}>सायं. लि.</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden' }}>सायं. रक्कम</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', fontWeight: 'bold', overflow: 'hidden' }}>एकूण लि.</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', fontWeight: 'bold', overflow: 'hidden' }}>एकूण रक्कम</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden' }}>कपात तपशील</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden' }}>एकूण कपात</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden' }}>निव्वळ अदा</th>
+                                                <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px 2px', verticalAlign: 'middle', overflow: 'hidden' }}>सही</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {pdfJob.chunks[pdfJob.currentChunk].rows.map((row, i) => (
                                                 <tr key={i} style={{ textAlign: 'right', verticalAlign: 'middle', fontSize: '12px' }}>
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center', overflow: 'hidden'  }}>{row.farmerCode}</td>
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px 6px', textAlign: 'left', fontWeight: 'bold', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis'  }}>{row.name}</td>
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', whiteSpace: 'nowrap', overflow: 'hidden'  }}>{row.morning.qty}</td>
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', whiteSpace: 'nowrap', overflow: 'hidden'  }}>{formatLocaleNum(formatMoney(row.morning.amt))}</td>
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', whiteSpace: 'nowrap', overflow: 'hidden'  }}>{row.evening.qty}</td>
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', whiteSpace: 'nowrap', overflow: 'hidden'  }}>{formatLocaleNum(formatMoney(row.evening.amt))}</td>
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden'  }}>{row.total.qty}</td>
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden'  }}>{formatByPrintSetting(row.total.amt, pdfJob.printSettings)}</td>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center', overflow: 'hidden' }}>{row.farmerCode}</td>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px 6px', textAlign: 'left', fontWeight: 'bold', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.name}</td>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', whiteSpace: 'nowrap', overflow: 'hidden' }}>{row.morning.qty}</td>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', whiteSpace: 'nowrap', overflow: 'hidden' }}>{formatLocaleNum(formatMoney(row.morning.amt))}</td>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', whiteSpace: 'nowrap', overflow: 'hidden' }}>{row.evening.qty}</td>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', whiteSpace: 'nowrap', overflow: 'hidden' }}>{formatLocaleNum(formatMoney(row.evening.amt))}</td>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden' }}>{row.total.qty}</td>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden' }}>{formatByPrintSetting(row.total.amt, pdfJob.printSettings)}</td>
                                                     {/* कपात तपशील */}
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px 5px', textAlign: 'left', fontSize: '11px', verticalAlign: 'middle', overflow: 'hidden'  }}>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px 5px', textAlign: 'left', fontSize: '11px', verticalAlign: 'middle', overflow: 'hidden' }}>
                                                         {row.deductionBreakdown && row.deductionBreakdown.length > 0 ? (
                                                             row.deductionBreakdown.map((d, di) => (
-                                                                <div key={di} style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', gap: '4px', lineHeight: '1.4', whiteSpace: 'nowrap'  }}>
-                                                                    <span style={{ color: 'black',  fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px'  }}>{d.name}:</span>
-                                                                    <span style={{ color: 'black',  flexShrink: 0  }}>-{formatByPrintSetting(d.amount, pdfJob.printSettings)}</span>
+                                                                <div key={di} style={{ color: 'black', display: 'flex', justifyContent: 'space-between', gap: '4px', lineHeight: '1.4', whiteSpace: 'nowrap' }}>
+                                                                    <span style={{ color: 'black', fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px' }}>{d.name}:</span>
+                                                                    <span style={{ color: 'black', flexShrink: 0 }}>-{formatByPrintSetting(d.amount, pdfJob.printSettings)}</span>
                                                                 </div>
                                                             ))
                                                         ) : (
@@ -2378,14 +2441,14 @@ function Billing({ user }) {
                                                         )}
                                                     </td>
                                                     {/* एकूण कपात */}
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden'  }}>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden' }}>
                                                         {row.totalDeduction > 0 ? `-${formatByPrintSetting(row.totalDeduction, pdfJob.printSettings)}` : '-'}
                                                     </td>
                                                     {/* निव्वळ अदा */}
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden'  }}>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden' }}>
                                                         {row.net}
                                                     </td>
-                                                    <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', overflow: 'hidden'  }}></td>
+                                                    <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', overflow: 'hidden' }}></td>
                                                 </tr>
                                             ))}
                                         </tbody>
@@ -2393,8 +2456,9 @@ function Billing({ user }) {
                                 </div>
 
                                 {pdfJob.currentChunk === pdfJob.chunks.length - 1 && pdfJob.registerSectionTotals && (
-                                    <div style={{ color: 'black',  marginTop: '14px', width: '100%'  }}>
-                                        <div style={{ color: 'black', 
+                                    <div style={{ color: 'black', marginTop: '14px', width: '100%' }}>
+                                        <div style={{
+                                            color: 'black',
                                             textAlign: 'center',
                                             fontWeight: 'bold',
                                             fontSize: '14px',
@@ -2403,22 +2467,22 @@ function Billing({ user }) {
                                             background: 'transparent',
                                             border: '1px solid black',
                                             borderRadius: '4px'
-                                         }}>
+                                        }}>
                                             {t('register.summaryBlockTitle')}
                                         </div>
                                         <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: '11px', borderTop: '1px solid black', borderLeft: '1px solid black', tableLayout: 'fixed' }}>
                                             <thead>
                                                 <tr style={{ background: 'transparent', textAlign: 'center', fontWeight: 'bold' }}>
-                                                    <th colSpan={2} style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'left'  }}>{t('register.name')}</th>
-                                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>सका. लि.</th>
-                                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>सका. रक्कम</th>
-                                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>सायं. लि.</th>
-                                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>सायं. रक्कम</th>
-                                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>एकूण लि.</th>
-                                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>एकूण रक्कम</th>
-                                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>एकूण कपात</th>
-                                                    <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>निव्वळ अदा</th>
-                                                    <th colSpan={2} style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }} />
+                                                    <th colSpan={2} style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'left' }}>{t('register.name')}</th>
+                                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>सका. लि.</th>
+                                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>सका. रक्कम</th>
+                                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>सायं. लि.</th>
+                                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>सायं. रक्कम</th>
+                                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>एकूण लि.</th>
+                                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>एकूण रक्कम</th>
+                                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>एकूण कपात</th>
+                                                    <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>निव्वळ अदा</th>
+                                                    <th colSpan={2} style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }} />
                                                 </tr>
                                             </thead>
                                             <tbody>
@@ -2436,20 +2500,20 @@ function Billing({ user }) {
                                                             fontWeight: key === 'all' ? 'bold' : '600',
                                                             fontSize: key === 'all' ? '12px' : '11px'
                                                         }}>
-                                                            <td colSpan={2} style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '5px 8px', textAlign: 'left', fontSize: '12px'  }}>{label}</td>
-                                                            <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>{totals.morningQty.toFixed(3)}</td>
-                                                            <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>{formatLocaleNum(formatMoney(totals.morningAmt))}</td>
-                                                            <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>{totals.eveningQty.toFixed(3)}</td>
-                                                            <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>{formatLocaleNum(formatMoney(totals.eveningAmt))}</td>
-                                                            <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>{totals.totalQty.toFixed(3)}</td>
-                                                            <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>{formatByPrintSetting(totals.totalAmt, pdfJob.printSettings)}</td>
-                                                            <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }}>
+                                                            <td colSpan={2} style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '5px 8px', textAlign: 'left', fontSize: '12px' }}>{label}</td>
+                                                            <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>{totals.morningQty.toFixed(3)}</td>
+                                                            <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>{formatLocaleNum(formatMoney(totals.morningAmt))}</td>
+                                                            <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>{totals.eveningQty.toFixed(3)}</td>
+                                                            <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>{formatLocaleNum(formatMoney(totals.eveningAmt))}</td>
+                                                            <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>{totals.totalQty.toFixed(3)}</td>
+                                                            <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>{formatByPrintSetting(totals.totalAmt, pdfJob.printSettings)}</td>
+                                                            <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }}>
                                                                 {totals.totalDeduction > 0 ? `-${formatByPrintSetting(totals.totalDeduction, pdfJob.printSettings)}` : '0'}
                                                             </td>
-                                                            <td style={{ borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', color: key === 'all' ? '#1b5e20' : '#111827', fontWeight: key === 'all' ? 'bold' : '600'  }}>
+                                                            <td style={{ borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', color: key === 'all' ? '#1b5e20' : '#111827', fontWeight: key === 'all' ? 'bold' : '600' }}>
                                                                 {formatByPrintSetting(totals.net, pdfJob.printSettings, { truncate: true })}
                                                             </td>
-                                                            <td colSpan={2} style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px'  }} />
+                                                            <td colSpan={2} style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px' }} />
                                                         </tr>
                                                     );
                                                 })}
@@ -2458,10 +2522,10 @@ function Billing({ user }) {
                                     </div>
                                 )}
 
-                                <div style={{ color: 'black',  marginTop: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingTop: '8px'  }}>
+                                <div style={{ color: 'black', marginTop: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingTop: '8px' }}>
                                     <div style={{ fontSize: '10px', color: 'black' }}>Powered by DudhSakha Milk Management System | Software Contact: 8999112047</div>
-                                    <div style={{ color: 'black',  textAlign: 'center', paddingRight: '40px'  }}>
-                                        <div style={{ color: 'black',  borderTop: '1px solid black', width: '120px', margin: '0 auto'  }}></div>
+                                    <div style={{ color: 'black', textAlign: 'center', paddingRight: '40px' }}>
+                                        <div style={{ color: 'black', borderTop: '1px solid black', width: '120px', margin: '0 auto' }}></div>
                                         <p style={{ marginTop: '5px', fontSize: '12px', fontWeight: 'bold' }}>{t('register.dairySign')}</p>
                                     </div>
                                 </div>
@@ -2483,15 +2547,15 @@ function Billing({ user }) {
                                     const totalQty = (parseFloat(totalMorningQty) + parseFloat(totalEveningQty)).toFixed(3);
 
                                     return (
-                                        <div key={billIdx} style={{ color: 'black',  marginBottom: '8mm', borderBottom: '2px solid black', paddingBottom: '6mm'  }}>
+                                        <div key={billIdx} style={{ color: 'black', marginBottom: '8mm', borderBottom: '2px solid black', paddingBottom: '6mm' }}>
 
                                             {/* ── TOP HEADER: Dairy Name centered ── */}
-                                            <div style={{ color: 'black',  textAlign: 'center', marginBottom: '6px'  }}>
-                                                <div style={{ color: 'black',  fontSize: '20px', fontWeight: 'bold'  }}>{bill.dairyName}</div>
+                                            <div style={{ color: 'black', textAlign: 'center', marginBottom: '6px' }}>
+                                                <div style={{ color: 'black', fontSize: '20px', fontWeight: 'bold' }}>{bill.dairyName}</div>
                                             </div>
 
                                             {/* ── SUB-HEADER ROW 1: विभाग / दूध प्रकार / नंबर / दिनांक ── */}
-                                            <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px', alignItems: 'center', flexWrap: 'wrap'  }}>
+                                            <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px', alignItems: 'center', flexWrap: 'wrap' }}>
                                                 <span>{i18n.language === 'mr' ? 'विभाग :' : 'Branch:'} {t('billing.billPrint.mainBranch', 'Main Branch')}</span>
                                                 <span>{i18n.language === 'mr' ? 'दुध प्रकार :' : 'Milk Type:'} {milkTypeLabel}</span>
                                                 <span>{i18n.language === 'mr' ? 'नंबर :' : 'No:'} {formatLocaleNum(bill.farmerCode)}</span>
@@ -2499,9 +2563,9 @@ function Billing({ user }) {
                                             </div>
 
                                             {/* ── SUB-HEADER ROW 2: नांव on left | बील दिनांक right ── */}
-                                            <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 'bold', marginBottom: '8px', alignItems: 'center'  }}>
-                                                <div style={{ color: 'black',  whiteSpace: 'nowrap'  }}>{i18n.language === 'mr' ? 'नांव' : 'Name'} &nbsp; {bill.farmerName}</div>
-                                                <div style={{ color: 'black',  whiteSpace: 'nowrap'  }}>{i18n.language === 'mr' ? 'बील दिनांक' : 'Bill Period'} {formatLocaleNum(bill.billPeriod)}</div>
+                                            <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 'bold', marginBottom: '8px', alignItems: 'center' }}>
+                                                <div style={{ color: 'black', whiteSpace: 'nowrap' }}>{i18n.language === 'mr' ? 'नांव' : 'Name'} &nbsp; {bill.farmerName}</div>
+                                                <div style={{ color: 'black', whiteSpace: 'nowrap' }}>{i18n.language === 'mr' ? 'बील दिनांक' : 'Bill Period'} {formatLocaleNum(bill.billPeriod)}</div>
                                             </div>
 
                                             {/* ── MAIN TABLE with fixed layout and explicit column widths ── */}
@@ -2522,22 +2586,22 @@ function Billing({ user }) {
                                                 </colgroup>
                                                 <thead>
                                                     <tr style={{ textAlign: 'center', fontWeight: 'bold', fontSize: '13px' }}>
-                                                        <th rowSpan="2" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'दिनांक' : 'Date'}</th>
-                                                        <th colSpan="4" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'सकाळ' : 'Morning'}</th>
-                                                        <th colSpan="4" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'संध्याकाळ' : 'Evening'}</th>
-                                                        <th rowSpan="2" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'कपात' : 'Ded.'}</th>
-                                                        <th rowSpan="2" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'रक्कम' : 'Amt'}</th>
-                                                        <th rowSpan="2" style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'येणे बाकी' : 'Bal.'}</th>
+                                                        <th rowSpan="2" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'center' }}>{i18n.language === 'mr' ? 'दिनांक' : 'Date'}</th>
+                                                        <th colSpan="4" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'सकाळ' : 'Morning'}</th>
+                                                        <th colSpan="4" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'संध्याकाळ' : 'Evening'}</th>
+                                                        <th rowSpan="2" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'center' }}>{i18n.language === 'mr' ? 'कपात' : 'Ded.'}</th>
+                                                        <th rowSpan="2" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'center' }}>{i18n.language === 'mr' ? 'रक्कम' : 'Amt'}</th>
+                                                        <th rowSpan="2" style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', verticalAlign: 'middle', textAlign: 'center' }}>{i18n.language === 'mr' ? 'येणे बाकी' : 'Bal.'}</th>
                                                     </tr>
                                                     <tr style={{ textAlign: 'center', fontWeight: 'bold', fontSize: '12px' }}>
-                                                        <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'दुध' : 'Qty'}</th>
-                                                        <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'फॅट' : 'Fat'}</th>
-                                                        <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'दर' : 'Rate'}</th>
-                                                        <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'रक्कम' : 'Amt'}</th>
-                                                        <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'दुध' : 'Qty'}</th>
-                                                        <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'फॅट' : 'Fat'}</th>
-                                                        <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'दर' : 'Rate'}</th>
-                                                        <th style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'रक्कम' : 'Amt'}</th>
+                                                        <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'दुध' : 'Qty'}</th>
+                                                        <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'फॅट' : 'Fat'}</th>
+                                                        <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'दर' : 'Rate'}</th>
+                                                        <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'रक्कम' : 'Amt'}</th>
+                                                        <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'दुध' : 'Qty'}</th>
+                                                        <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'फॅट' : 'Fat'}</th>
+                                                        <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'दर' : 'Rate'}</th>
+                                                        <th style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'रक्कम' : 'Amt'}</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
@@ -2564,24 +2628,24 @@ function Billing({ user }) {
                                                     })}
                                                     {/* ── TOTALS ROW ── */}
                                                     <tr style={{ fontWeight: 'bold', textAlign: 'center', fontSize: '12px' }}>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center'  }}>{i18n.language === 'mr' ? 'एकुण' : 'Total'}</td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px'  }}>{formatLocaleNum(totalMorningQty)}</td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black'  }}></td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black'  }}></td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px'  }}>{formatByPrintSetting(bill.summary.morningAmount, pdfJob.printSettings)}</td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px'  }}>{formatLocaleNum(totalEveningQty)}</td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black'  }}></td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black'  }}></td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px'  }}>{formatByPrintSetting(bill.summary.eveningAmount, pdfJob.printSettings)}</td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'left', fontSize: '12px'  }}>{i18n.language === 'mr' ? 'एकुण कपात' : 'Total Ded.'}</td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px'  }}>{toSafeNumber(bill.summary.deductionTotalDeducted) > 0 ? formatByPrintSetting(bill.summary.deductionTotalDeducted, pdfJob.printSettings) : ''}</td>
-                                                        <td style={{ color: 'black',  borderBottom: '1px solid black', borderRight: '1px solid black'  }}></td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '4px', textAlign: 'center' }}>{i18n.language === 'mr' ? 'एकुण' : 'Total'}</td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px' }}>{formatLocaleNum(totalMorningQty)}</td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black' }}></td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black' }}></td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px' }}>{formatByPrintSetting(bill.summary.morningAmount, pdfJob.printSettings)}</td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px' }}>{formatLocaleNum(totalEveningQty)}</td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black' }}></td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black' }}></td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px' }}>{formatByPrintSetting(bill.summary.eveningAmount, pdfJob.printSettings)}</td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px', textAlign: 'left', fontSize: '12px' }}>{i18n.language === 'mr' ? 'एकुण कपात' : 'Total Ded.'}</td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black', padding: '3px' }}>{toSafeNumber(bill.summary.deductionTotalDeducted) > 0 ? formatByPrintSetting(bill.summary.deductionTotalDeducted, pdfJob.printSettings) : ''}</td>
+                                                        <td style={{ color: 'black', borderBottom: '1px solid black', borderRight: '1px solid black' }}></td>
                                                     </tr>
                                                 </tbody>
                                             </table>
 
                                             {/* ── FOOTER SUMMARY ── */}
-                                            <div style={{ color: 'black',  border: '1px solid black', borderTop: 'none', padding: '4px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', fontWeight: 'bold'  }}>
+                                            <div style={{ color: 'black', border: '1px solid black', borderTop: 'none', padding: '4px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', fontWeight: 'bold' }}>
                                                 <span>{i18n.language === 'mr' ? 'एकुण दुध' : 'Total Milk'} {formatLocaleNum(totalQty)}</span>
                                                 <span>{i18n.language === 'mr' ? 'एकुण रक्कम' : 'Total Amount'} {formatByPrintSetting(bill.summary.totalAmount, pdfJob.printSettings)}</span>
                                                 {(bill.summary.thevEntries || []).length > 0
@@ -2596,14 +2660,14 @@ function Billing({ user }) {
                                                         </span>
                                                     )
                                                 }
-                                                <span style={{ color: 'black',  fontSize: '14px'  }}>{i18n.language === 'mr' ? 'निव्वळ अदा' : 'Net Payable'} {formatByPrintSetting(bill.summary.netAmount, pdfJob.printSettings, { truncate: true })}</span>
+                                                <span style={{ color: 'black', fontSize: '14px' }}>{i18n.language === 'mr' ? 'निव्वळ अदा' : 'Net Payable'} {formatByPrintSetting(bill.summary.netAmount, pdfJob.printSettings, { truncate: true })}</span>
                                             </div>
 
                                             {/* Signature: सही */}
-                                            <div style={{ color: 'black',  display: 'flex', justifyContent: 'flex-end', marginTop: '15px'  }}>
-                                                <div style={{ color: 'black',  textAlign: 'center', minWidth: '100px'  }}>
-                                                    <div style={{ color: 'black',  borderTop: '1px solid black', marginBottom: '4px'  }}></div>
-                                                    <span style={{ color: 'black',  fontWeight: 'bold', fontSize: '13px'  }}>{i18n.language === 'mr' ? 'सही' : 'Signature'}</span>
+                                            <div style={{ color: 'black', display: 'flex', justifyContent: 'flex-end', marginTop: '15px' }}>
+                                                <div style={{ color: 'black', textAlign: 'center', minWidth: '100px' }}>
+                                                    <div style={{ color: 'black', borderTop: '1px solid black', marginBottom: '4px' }}></div>
+                                                    <span style={{ color: 'black', fontWeight: 'bold', fontSize: '13px' }}>{i18n.language === 'mr' ? 'सही' : 'Signature'}</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -2621,44 +2685,44 @@ function Billing({ user }) {
                                 boxSizing: 'border-box'
                             }}>
                                 {pdfJob.chunks[pdfJob.currentChunk].map((bill, billIdx) => (
-                                    <div key={billIdx} style={{ color: 'black',  marginBottom: '6mm', borderBottom: '1px solid #ccc', paddingBottom: '6mm'  }}>
-                                        
+                                    <div key={billIdx} style={{ color: 'black', marginBottom: '6mm', borderBottom: '1px solid #ccc', paddingBottom: '6mm' }}>
+
                                         {/* Farmer ID Box (Top Right) */}
-                                        <div style={{ color: 'black',  display: 'flex', justifyContent: 'flex-end', marginBottom: '4px'  }}>
-                                            <div style={{  
-                                                backgroundColor: 'black', 
-                                                color: 'white', 
-                                                padding: '4px 15px', 
-                                                fontWeight: 'bold', 
+                                        <div style={{ color: 'black', display: 'flex', justifyContent: 'flex-end', marginBottom: '4px' }}>
+                                            <div style={{
+                                                backgroundColor: 'black',
+                                                color: 'white',
+                                                padding: '4px 15px',
+                                                fontWeight: 'bold',
                                                 fontSize: '16px',
                                                 borderRadius: '2px'
-                                             }}>
+                                            }}>
                                                 {formatLocaleNum(bill.farmerCode)}
                                             </div>
                                         </div>
 
                                         {/* Row 1: Period - Dairy - Branch */}
-                                        <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '6px', fontSize: '13px', fontWeight: 'bold'  }}>
-                                            <div style={{ color: 'black',  width: '30%'  }}>
+                                        <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '6px', fontSize: '13px', fontWeight: 'bold' }}>
+                                            <div style={{ color: 'black', width: '30%' }}>
                                                 {t('billing.billPrint.period')} : {formatLocaleNum(bill.billPeriod)}
                                             </div>
-                                            <div style={{ color: 'black',  width: '40%', fontSize: '20px', textAlign: 'center'  }}>
+                                            <div style={{ color: 'black', width: '40%', fontSize: '20px', textAlign: 'center' }}>
                                                 {bill.dairyName}
                                             </div>
-                                            <div style={{ color: 'black',  width: '30%', textAlign: 'right'  }}>
+                                            <div style={{ color: 'black', width: '30%', textAlign: 'right' }}>
                                                 {t('billing.billPrint.branch')} - {t('billing.billPrint.mainBranch')}
                                             </div>
                                         </div>
 
                                         {/* Row 2: Bank - Days Bill - Name */}
-                                        <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px', fontWeight: 'bold'  }}>
-                                            <div style={{ color: 'black',  width: '30%'  }}>
+                                        <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px', fontWeight: 'bold' }}>
+                                            <div style={{ color: 'black', width: '30%' }}>
                                                 {t('billing.billPrint.bank')} : -
                                             </div>
-                                            <div style={{ color: 'black',  width: '40%', textAlign: 'center'  }}>
+                                            <div style={{ color: 'black', width: '40%', textAlign: 'center' }}>
                                                 {t('billing.billPrint.daysBill', { days: formatLocaleNum(bill.billingDays) })}
                                             </div>
-                                            <div style={{ color: 'black',  width: '30%', textAlign: 'right'  }}>
+                                            <div style={{ color: 'black', width: '30%', textAlign: 'right' }}>
                                                 {t('billing.billPrint.farmerName')} : {formatLocaleNum(bill.farmerCode)} - {bill.farmerName}
                                             </div>
                                         </div>
@@ -2761,23 +2825,23 @@ function Billing({ user }) {
                                         </table>
 
                                         {/* Refined Summary Block Below Table */}
-                                        <div style={{ color: 'black',  marginTop: '0px', border: '1px solid black', borderTop: 'none', padding: '4px 8px'  }}>
+                                        <div style={{ color: 'black', marginTop: '0px', border: '1px solid black', borderTop: 'none', padding: '4px 8px' }}>
                                             {/* Row 1 Summary - Per Milk Type */}
                                             {bill.milkTypeSummary.map((ms, msIdx) => (
-                                                <div key={msIdx} style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 'bold', borderBottom: '1px solid #eee', paddingBottom: '2px', marginBottom: '2px'  }}>
-                                                    <div style={{ color: 'black',  flex: 1  }}>{t('billing.billPrint.totalLiters')} : {formatLocaleNum(ms.liters)}</div>
-                                                    <div style={{ color: 'black',  flex: 1  }}>{t('billing.billPrint.fat')} : {formatLocaleNum(ms.avgFat)}</div>
-                                                    <div style={{ color: 'black',  flex: 1  }}>{t('billing.billPrint.snf')} : {formatLocaleNum(ms.avgSnf)}</div>
-                                                    <div style={{ color: 'black',  flex: 2  }}>{ms.type === 'Buffalo' ? t('billing.billPrint.buffaloMilk') : t('billing.billPrint.cowMilk')} {t('billing.billPrint.milkBill')} : {formatByPrintSetting(ms.amount, pdfJob.printSettings)}</div>
-                                                    {msIdx === 0 && <div style={{ color: 'black',  flex: 2, textAlign: 'right'  }}>{t('billing.billPrint.errorCorrection')}</div>}
-                                                    {msIdx !== 0 && <div style={{ color: 'black',  flex: 2  }}></div>}
+                                                <div key={msIdx} style={{ color: 'black', display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 'bold', borderBottom: '1px solid #eee', paddingBottom: '2px', marginBottom: '2px' }}>
+                                                    <div style={{ color: 'black', flex: 1 }}>{t('billing.billPrint.totalLiters')} : {formatLocaleNum(ms.liters)}</div>
+                                                    <div style={{ color: 'black', flex: 1 }}>{t('billing.billPrint.fat')} : {formatLocaleNum(ms.avgFat)}</div>
+                                                    <div style={{ color: 'black', flex: 1 }}>{t('billing.billPrint.snf')} : {formatLocaleNum(ms.avgSnf)}</div>
+                                                    <div style={{ color: 'black', flex: 2 }}>{ms.type === 'Buffalo' ? t('billing.billPrint.buffaloMilk') : t('billing.billPrint.cowMilk')} {t('billing.billPrint.milkBill')} : {formatByPrintSetting(ms.amount, pdfJob.printSettings)}</div>
+                                                    {msIdx === 0 && <div style={{ color: 'black', flex: 2, textAlign: 'right' }}>{t('billing.billPrint.errorCorrection')}</div>}
+                                                    {msIdx !== 0 && <div style={{ color: 'black', flex: 2 }}></div>}
                                                 </div>
                                             ))}
                                             {/* Row 2 Summary - with Thev inline */}
-                                            <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 'bold', paddingTop: '4px'  }}>
-                                                <div style={{ color: 'black',  flex: 1  }}>{t('billing.billPrint.totalMilkBill')} : {formatByPrintSetting(bill.summary.totalAmount, pdfJob.printSettings)}</div>
-                                                <div style={{ color: 'black',  flex: 1  }}>{t('billing.billPrint.totalDeductions')} : {formatByPrintSetting(bill.summary.totalDeduction, pdfJob.printSettings)}</div>
-                                                <div style={{ color: 'black',  flex: 2  }}>{t('billing.billPrint.deductionAsOf', { date: formatLocaleNum(bill.endDate || '') })}</div>
+                                            <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 'bold', paddingTop: '4px' }}>
+                                                <div style={{ color: 'black', flex: 1 }}>{t('billing.billPrint.totalMilkBill')} : {formatByPrintSetting(bill.summary.totalAmount, pdfJob.printSettings)}</div>
+                                                <div style={{ color: 'black', flex: 1 }}>{t('billing.billPrint.totalDeductions')} : {formatByPrintSetting(bill.summary.totalDeduction, pdfJob.printSettings)}</div>
+                                                <div style={{ color: 'black', flex: 2 }}>{t('billing.billPrint.deductionAsOf', { date: formatLocaleNum(bill.endDate || '') })}</div>
                                                 {(bill.summary.thevEntries || []).length > 0
                                                     ? (bill.summary.thevEntries).map((te, tIdx) => (
                                                         <div key={tIdx} style={{ color: 'black', flex: 2, fontSize: '12px', paddingLeft: tIdx === 0 ? '12px' : '4px' }}>
@@ -2790,18 +2854,18 @@ function Billing({ user }) {
                                                         </div>
                                                     )
                                                 }
-                                                <div style={{ color: 'black',  flex: 2, textAlign: 'right', fontSize: '13px'  }}>
-                                                    {t('billing.billPrint.netPayable')} : <span style={{ color: 'black',  fontSize: '15px'  }}>{formatByPrintSetting(bill.summary.netAmount, pdfJob.printSettings, { truncate: true })}</span>
+                                                <div style={{ color: 'black', flex: 2, textAlign: 'right', fontSize: '13px' }}>
+                                                    {t('billing.billPrint.netPayable')} : <span style={{ color: 'black', fontSize: '15px' }}>{formatByPrintSetting(bill.summary.netAmount, pdfJob.printSettings, { truncate: true })}</span>
                                                 </div>
                                             </div>
 
                                         </div>
 
                                         {/* Footer / Signature */}
-                                        <div style={{ color: 'black',  display: 'flex', justifyContent: 'flex-end', marginTop: '15px'  }}>
-                                            <div style={{ color: 'black',  textAlign: 'center', minWidth: '150px'  }}>
-                                                <div style={{ color: 'black',  borderTop: '1px solid black', marginBottom: '4px'  }}></div>
-                                                <span style={{ color: 'black',  fontWeight: 'bold', fontSize: '11px'  }}>{t('billing.billPrint.signature')}</span>
+                                        <div style={{ color: 'black', display: 'flex', justifyContent: 'flex-end', marginTop: '15px' }}>
+                                            <div style={{ color: 'black', textAlign: 'center', minWidth: '150px' }}>
+                                                <div style={{ color: 'black', borderTop: '1px solid black', marginBottom: '4px' }}></div>
+                                                <span style={{ color: 'black', fontWeight: 'bold', fontSize: '11px' }}>{t('billing.billPrint.signature')}</span>
                                             </div>
                                         </div>
                                     </div>
@@ -2815,13 +2879,14 @@ function Billing({ user }) {
             {/* Loading Overlay */}
             {
                 (pdfLoading) && (
-                    <div style={{ color: 'black', 
+                    <div style={{
+                        color: 'black',
                         position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
                         backgroundColor: 'rgba(255, 255, 255, 0.8)',
                         zIndex: 9999, display: 'flex', flexDirection: 'column',
                         alignItems: 'center', justifyContent: 'center', gap: '16px',
                         backdropFilter: 'blur(4px)'
-                     }}>
+                    }}>
                         <Loader2 className="animate-spin" size={48} color="#4f46e5" />
                         <span style={{ fontSize: '18px', fontWeight: '600', color: 'black' }}>
                             {t('reports.backup.generating') || "Generating PDF..."}
@@ -2834,14 +2899,15 @@ function Billing({ user }) {
 
             {/* Premium Glassy PDF Preview Modal */}
             {pdfPreview && (
-                <div style={{ color: 'black', 
+                <div style={{
+                    color: 'black',
                     position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
                     height: '100vh',
                     backgroundColor: 'rgba(241, 245, 249, 0.95)', zIndex: 10000,
                     display: 'flex', flexDirection: 'column',
                     backdropFilter: 'blur(8px)',
                     overflow: 'hidden'
-                 }}>
+                }}>
                     {/* Glassy Toolbar */}
                     <div style={{
                         background: 'rgba(255, 255, 255, 0.85)', color: 'black', padding: '16px 36px',
@@ -2849,13 +2915,14 @@ function Billing({ user }) {
                         borderBottom: '1px solid #e2e8f0',
                         boxShadow: '0 4px 20px rgba(0,0,0,0.05)'
                     }}>
-                        <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '14px', flex: 1  }}>
-                            <div style={{ color: 'black', 
+                        <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '14px', flex: 1 }}>
+                            <div style={{
+                                color: 'black',
                                 width: '44px', height: '44px', borderRadius: '14px',
                                 background: 'linear-gradient(135deg, #4f46e5 0%, #6366f1 100%)',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 boxShadow: '0 4px 12px rgba(79, 70, 229, 0.3)'
-                             }}>
+                            }}>
                                 <FileText color="white" size={22} />
                             </div>
                             <div>
@@ -2869,19 +2936,15 @@ function Billing({ user }) {
                             </div>
                         </div>
 
-                        <div style={{ color: 'black',  display: 'flex', gap: '12px'  }}>
+                        <div style={{ color: 'black', display: 'flex', gap: '12px' }}>
                             <button
                                 onClick={() => {
                                     if (pdfPreview.pdfRef) {
-                                        const blob = pdfPreview.pdfRef.output('bloburl');
-                                        const win = window.open(blob, '_blank');
-                                        if (win) {
-                                            win.focus();
-                                            // Some browsers require a small timeout before printing
-                                            setTimeout(() => {
-                                                win.print();
-                                            }, 500);
-                                        }
+                                        // Try to open in system PDF viewer; fall back to print dialog
+                                        const pdfBase64 = pdfPreview.pdfRef.output('datauristring').split(',')[1];
+                                        window.electron.invoke('open-pdf', pdfBase64).catch(() => {
+                                            window.electron.invoke('print-pdf', pdfBase64);
+                                        });
                                     }
                                 }}
                                 style={{
@@ -2893,7 +2956,7 @@ function Billing({ user }) {
                                     boxShadow: '0 4px 12px rgba(79, 70, 229, 0.1)'
                                 }}
                             >
-                                <Printer size={18} /> {t('common.print', { defaultValue: 'Print' })}
+                                <Printer size={18} /> {t('common.openAndPrint', { defaultValue: 'Open & Print' })}
                             </button>
                             <button
                                 onClick={() => {
@@ -2928,7 +2991,8 @@ function Billing({ user }) {
                     </div>
 
                     {/* Preview: fit full bill in viewport; scroll for multi-page */}
-                    <div style={{ color: 'black', 
+                    <div style={{
+                        color: 'black',
                         flex: 1,
                         minHeight: 0,
                         padding: '16px 20px 24px',
@@ -2939,11 +3003,12 @@ function Billing({ user }) {
                         alignItems: 'center',
                         background: '#f1f5f9',
                         gap: '20px'
-                     }}>
+                    }}>
                         {pdfPreview.images.map((img, index) => (
                             <div
                                 key={index}
-                                style={{ color: 'black', 
+                                style={{
+                                    color: 'black',
                                     width: '100%',
                                     maxWidth: 'min(1200px, 100%)',
                                     background: 'white',
@@ -2953,7 +3018,7 @@ function Billing({ user }) {
                                     display: 'flex',
                                     justifyContent: 'center',
                                     alignItems: 'flex-start'
-                                 }}
+                                }}
                             >
                                 <img
                                     src={img}
@@ -2975,25 +3040,28 @@ function Billing({ user }) {
             )}
             {/* Thermal Receipt Preview Modal */}
             {showThermalModal && thermalData && (
-                <div className="modal-overlay no-print" style={{ color: 'black', 
+                <div className="modal-overlay no-print" style={{
+                    color: 'black',
                     position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
                     background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center',
                     justifyContent: 'center', zIndex: 3000
-                 }}>
-                    <div className="modal" style={{ color: 'black', 
+                }}>
+                    <div className="modal" style={{
+                        color: 'black',
                         background: 'white', borderRadius: '20px', width: '400px',
                         maxHeight: '90vh', display: 'flex', flexDirection: 'column'
-                     }}>
-                        <div className="modal-header" style={{ color: 'black', 
+                    }}>
+                        <div className="modal-header" style={{
+                            color: 'black',
                             padding: '16px 24px', borderBottom: '1px solid black',
                             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                             background: 'transparent', borderTopLeftRadius: '20px', borderTopRightRadius: '20px'
-                         }}>
+                        }}>
                             <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: 'black' }}>
                                 {t('billing.thermal.preview', 'Thermal Receipt Preview')}
                             </h3>
-                            <div style={{ color: 'black',  display: 'flex', gap: '8px'  }}>
-                                <button onClick={() => setShowThermalModal(false)} style={{ 
+                            <div style={{ color: 'black', display: 'flex', gap: '8px' }}>
+                                <button onClick={() => setShowThermalModal(false)} style={{
                                     background: 'none', border: 'none', cursor: 'pointer', color: 'black',
                                     padding: '4px', borderRadius: '8px', display: 'flex'
                                 }}>
@@ -3001,29 +3069,30 @@ function Billing({ user }) {
                                 </button>
                             </div>
                         </div>
-                        
-                        <div className="modal-body" style={{ color: 'black',  
+
+                        <div className="modal-body" style={{
+                            color: 'black',
                             padding: '24px 0', overflowY: 'auto', background: 'transparent',
                             display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '500px'
-                         }}>
+                        }}>
                             {/* The Actual Receipt Content */}
                             <div id="thermal-receipt-printable" className="thermal-receipt" style={{
                                 width: '58mm', background: 'white', padding: '8px',
-                                boxShadow: '0 8px 20px rgba(0,0,0,0.06)', color: 'black', 
+                                boxShadow: '0 8px 20px rgba(0,0,0,0.06)', color: 'black',
                                 fontFamily: '"Courier New", Courier, monospace',
                                 borderRadius: '2px', lineShadow: '0 0 10px rgba(0,0,0,0.1)'
                             }}>
                                 {/* Header Section */}
-                                <div className="thermal-header" style={{ color: 'black',  textAlign: 'center', borderBottom: '1.5px solid #000', paddingBottom: '6px', marginBottom: '8px'  }}>
+                                <div className="thermal-header" style={{ color: 'black', textAlign: 'center', borderBottom: '1.5px solid #000', paddingBottom: '6px', marginBottom: '8px' }}>
                                     <h4 style={{ margin: '0 0 2px 0', fontSize: '12pt', fontWeight: 'bold', lineHeight: '1.1' }}>{thermalData.dairyName}</h4>
                                     <p style={{ margin: '0 0 4px 0', fontSize: '9pt', fontWeight: 'bold' }}>{t('billing.billPrint.title')}</p>
-                                    <div style={{ color: 'black',  fontSize: '8pt', textAlign: 'left', marginTop: '4px'  }}>
-                                        <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between'  }}>
+                                    <div style={{ color: 'black', fontSize: '8pt', textAlign: 'left', marginTop: '4px' }}>
+                                        <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between' }}>
                                             <span>{t('billing.table.code')}: <strong>{thermalData.farmerCode}</strong></span>
                                             <span>{thermalData.billDate}</span>
                                         </div>
-                                        <div style={{ color: 'black',  fontWeight: 'bold', fontSize: '10pt', marginTop: '2px', borderBottom: '0.5pt solid #eee', paddingBottom: '2px'  }}>{thermalData.farmerName}</div>
-                                        <div style={{ color: 'black',  fontSize: '7.5pt', marginTop: '2px'  }}>{t('billing.period')}: {thermalData.billPeriod}</div>
+                                        <div style={{ color: 'black', fontWeight: 'bold', fontSize: '10pt', marginTop: '2px', borderBottom: '0.5pt solid #eee', paddingBottom: '2px' }}>{thermalData.farmerName}</div>
+                                        <div style={{ color: 'black', fontSize: '7.5pt', marginTop: '2px' }}>{t('billing.period')}: {thermalData.billPeriod}</div>
                                     </div>
                                 </div>
 
@@ -3035,43 +3104,46 @@ function Billing({ user }) {
                                     const cols = thermalData.originalBill.collections.filter(c => c.shift === group.shift);
                                     if (cols.length === 0) return null;
                                     return (
-                                        <div key={group.shift} style={{ color: 'black',  marginBottom: '8px'  }}>
-                                            <div style={{ color: 'black',  
-                                                fontSize: '8pt', fontWeight: 'bold', borderBottom: '1px solid #000', 
-                                                marginBottom: '3px', display: 'flex', justifyContent: 'space-between' 
-                                             }}>
+                                        <div key={group.shift} style={{ color: 'black', marginBottom: '8px' }}>
+                                            <div style={{
+                                                color: 'black',
+                                                fontSize: '8pt', fontWeight: 'bold', borderBottom: '1px solid #000',
+                                                marginBottom: '3px', display: 'flex', justifyContent: 'space-between'
+                                            }}>
                                                 <span>{group.title}</span>
-                                                <span style={{ color: 'black',  fontSize: '7pt'  }}>({cols.length} {t('billing.billPrint.entries')})</span>
+                                                <span style={{ color: 'black', fontSize: '7pt' }}>({cols.length} {t('billing.billPrint.entries')})</span>
                                             </div>
                                             {/* Simplified Data Row Layout */}
-                                            <div style={{ color: 'black',  fontSize: '7.5pt', borderBottom: '0.5pt solid #000', marginBottom: '2px', display: 'flex', fontWeight: 'bold'  }}>
-                                                <div style={{ color: 'black',  flex: 1.5  }}>{t('billing.billPrint.date')}</div>
-                                                <div style={{ color: 'black',  flex: 1, textAlign: 'center'  }}>F</div>
-                                                <div style={{ color: 'black',  flex: 1, textAlign: 'center'  }}>S</div>
-                                                <div style={{ color: 'black',  flex: 1, textAlign: 'right'  }}>Q</div>
-                                                <div style={{ color: 'black',  flex: 1, textAlign: 'right'  }}>R</div>
-                                                <div style={{ color: 'black',  flex: 1.2, textAlign: 'right'  }}>A</div>
+                                            <div style={{ color: 'black', fontSize: '7.5pt', borderBottom: '0.5pt solid #000', marginBottom: '2px', display: 'flex', fontWeight: 'bold' }}>
+                                                <div style={{ color: 'black', flex: 1.5 }}>{t('billing.billPrint.date')}</div>
+                                                <div style={{ color: 'black', flex: 1, textAlign: 'center' }}>F</div>
+                                                <div style={{ color: 'black', flex: 1, textAlign: 'center' }}>S</div>
+                                                <div style={{ color: 'black', flex: 1, textAlign: 'right' }}>Q</div>
+                                                <div style={{ color: 'black', flex: 1, textAlign: 'right' }}>R</div>
+                                                <div style={{ color: 'black', flex: 1.2, textAlign: 'right' }}>A</div>
                                             </div>
                                             {cols.map((col, idx) => (
-                                                <div key={idx} style={{ color: 'black',  
+                                                <div key={idx} style={{
+                                                    color: 'black',
                                                     display: 'flex', fontSize: '7.5pt', padding: '1px 0',
                                                     borderBottom: idx === cols.length - 1 ? 'none' : '0.1pt solid #ddd'
-                                                 }}>
-                                                    <div style={{ color: 'black',  flex: 1.5  }}>{new Date(col.date).getDate()}/{new Date(col.date).getMonth() + 1}</div>
-                                                    <div style={{ color: 'black',  flex: 1, textAlign: 'center'  }}>{parseFloat(col.fat).toFixed(1)}</div>
-                                                    <div style={{ color: 'black',  flex: 1, textAlign: 'center'  }}>{parseFloat(col.snf).toFixed(1)}</div>
-                                                    <div style={{ color: 'black',  flex: 1, textAlign: 'right'  }}>{parseFloat(col.quantity).toFixed(3)}</div>
-                                                    <div style={{ color: 'black',  flex: 1, textAlign: 'right'  }}>{parseFloat(col.rate).toFixed(1)}</div>
-                                                    <div style={{ color: 'black',  flex: 1.2, textAlign: 'right'  }}>{formatByPrintSetting(col.amount, thermalData.printSettings || { showDecimals: true })}</div>
+                                                }}>
+                                                    <div style={{ color: 'black', flex: 1.5 }}>{new Date(col.date).getDate()}/{new Date(col.date).getMonth() + 1}</div>
+                                                    <div style={{ color: 'black', flex: 1, textAlign: 'center' }}>{parseFloat(col.fat).toFixed(1)}</div>
+                                                    <div style={{ color: 'black', flex: 1, textAlign: 'center' }}>{parseFloat(col.snf).toFixed(1)}</div>
+                                                    <div style={{ color: 'black', flex: 1, textAlign: 'right' }}>{parseFloat(col.quantity).toFixed(3)}</div>
+                                                    <div style={{ color: 'black', flex: 1, textAlign: 'right' }}>{parseFloat(col.rate).toFixed(1)}</div>
+                                                    <div style={{ color: 'black', flex: 1.2, textAlign: 'right' }}>{formatByPrintSetting(col.amount, thermalData.printSettings || { showDecimals: true })}</div>
                                                 </div>
                                             ))}
-                                            <div style={{ color: 'black',  
+                                            <div style={{
+                                                color: 'black',
                                                 fontWeight: 'bold', borderTop: '0.5pt solid #000', marginTop: '2px',
-                                                display: 'flex', justifyContent: 'flex-end', fontSize: '8pt' 
-                                             }}>
-                                                <span style={{ color: 'black',  marginRight: '10px'  }}>{t('billing.billPrint.total')}:</span>
-                                                <span style={{ color: 'black',  width: '40px', textAlign: 'right'  }}>{cols.reduce((s, c) => s + parseFloat(c.quantity), 0).toFixed(3)}</span>
-                                                <span style={{ color: 'black',  width: '45px', textAlign: 'right'  }}>{formatByPrintSetting(cols.reduce((s, c) => s + parseFloat(c.amount), 0), thermalData.printSettings || { showDecimals: true })}</span>
+                                                display: 'flex', justifyContent: 'flex-end', fontSize: '8pt'
+                                            }}>
+                                                <span style={{ color: 'black', marginRight: '10px' }}>{t('billing.billPrint.total')}:</span>
+                                                <span style={{ color: 'black', width: '40px', textAlign: 'right' }}>{cols.reduce((s, c) => s + parseFloat(c.quantity), 0).toFixed(3)}</span>
+                                                <span style={{ color: 'black', width: '45px', textAlign: 'right' }}>{formatByPrintSetting(cols.reduce((s, c) => s + parseFloat(c.amount), 0), thermalData.printSettings || { showDecimals: true })}</span>
                                             </div>
                                         </div>
                                     );
@@ -3079,55 +3151,57 @@ function Billing({ user }) {
 
                                 {/* Deductions Section */}
                                 {thermalData.originalBill.deduction_details && thermalData.originalBill.deduction_details.length > 0 && (
-                                    <div style={{ color: 'black',  marginBottom: '8px'  }}>
-                                        <div style={{ color: 'black',  fontSize: '8pt', fontWeight: 'bold', borderBottom: '1px solid #000', marginBottom: '3px'  }}>
+                                    <div style={{ color: 'black', marginBottom: '8px' }}>
+                                        <div style={{ color: 'black', fontSize: '8pt', fontWeight: 'bold', borderBottom: '1px solid #000', marginBottom: '3px' }}>
                                             {t('billing.billPrint.deduction')}
                                         </div>
-                                        <div style={{ color: 'black',  fontSize: '7.5pt', borderBottom: '0.5pt solid #000', marginBottom: '2px', display: 'flex', fontWeight: 'bold'  }}>
-                                            <div style={{ color: 'black',  flex: 1.5  }}>{t('billing.billPrint.deduction')}</div>
-                                            <div style={{ color: 'black',  flex: 0.8, textAlign: 'right'  }}>{t('billing.billPrint.initial').slice(0, 4)}</div>
-                                            <div style={{ color: 'black',  flex: 0.8, textAlign: 'right'  }}>{t('billing.billPrint.balance').slice(0, 4)}</div>
-                                            <div style={{ color: 'black',  flex: 0.8, textAlign: 'right'  }}>{t('billing.billPrint.payable').slice(0, 4)}</div>
+                                        <div style={{ color: 'black', fontSize: '7.5pt', borderBottom: '0.5pt solid #000', marginBottom: '2px', display: 'flex', fontWeight: 'bold' }}>
+                                            <div style={{ color: 'black', flex: 1.5 }}>{t('billing.billPrint.deduction')}</div>
+                                            <div style={{ color: 'black', flex: 0.8, textAlign: 'right' }}>{t('billing.billPrint.initial').slice(0, 4)}</div>
+                                            <div style={{ color: 'black', flex: 0.8, textAlign: 'right' }}>{t('billing.billPrint.balance').slice(0, 4)}</div>
+                                            <div style={{ color: 'black', flex: 0.8, textAlign: 'right' }}>{t('billing.billPrint.payable').slice(0, 4)}</div>
                                         </div>
                                         {thermalData.originalBill.deduction_details.map((d, idx) => (
-                                            <div key={idx} style={{ color: 'black',  
+                                            <div key={idx} style={{
+                                                color: 'black',
                                                 display: 'flex', fontSize: '7.5pt', padding: '1px 0',
                                                 borderBottom: idx === thermalData.originalBill.deduction_details.length - 1 ? 'none' : '0.1pt solid #ddd'
-                                             }}>
-                                                <div style={{ color: 'black',  flex: 1.5  }}>{d.name || d.deduction_name || 'Deduction'}</div>
-                                                <div style={{ color: 'black',  flex: 0.8, textAlign: 'right'  }}>{d.prevBalance ? formatByPrintSetting(d.prevBalance, thermalData.printSettings || { showDecimals: true }) : '—'}</div>
-                                                <div style={{ color: 'black',  flex: 0.8, textAlign: 'right', fontWeight: 'bold'  }}>{formatByPrintSetting(d.deducted || d.amount || 0, thermalData.printSettings || { showDecimals: true }, d?.type === 'thev' ? { decimals: 3 } : {})}</div>
-                                                <div style={{ color: 'black',  flex: 0.8, textAlign: 'right'  }}>{d.remaining ? formatByPrintSetting(d.remaining, thermalData.printSettings || { showDecimals: true }) : '—'}</div>
+                                            }}>
+                                                <div style={{ color: 'black', flex: 1.5 }}>{d.name || d.deduction_name || 'Deduction'}</div>
+                                                <div style={{ color: 'black', flex: 0.8, textAlign: 'right' }}>{d.prevBalance ? formatByPrintSetting(d.prevBalance, thermalData.printSettings || { showDecimals: true }) : '—'}</div>
+                                                <div style={{ color: 'black', flex: 0.8, textAlign: 'right', fontWeight: 'bold' }}>{formatByPrintSetting(d.deducted || d.amount || 0, thermalData.printSettings || { showDecimals: true }, d?.type === 'thev' ? { decimals: 3 } : {})}</div>
+                                                <div style={{ color: 'black', flex: 0.8, textAlign: 'right' }}>{d.remaining ? formatByPrintSetting(d.remaining, thermalData.printSettings || { showDecimals: true }) : '—'}</div>
                                             </div>
                                         ))}
                                     </div>
                                 )}
 
                                 {/* Summary Parity Section */}
-                                <div style={{ color: 'black',  borderTop: '1.5px solid #000', paddingTop: '6px', fontSize: '8pt'  }}>
-                                    <div style={{ color: 'black',  display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '4px'  }}>
+                                <div style={{ color: 'black', borderTop: '1.5px solid #000', paddingTop: '6px', fontSize: '8pt' }}>
+                                    <div style={{ color: 'black', display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
                                         {thermalData.milkTypeSummary.map((m, idx) => (
-                                            <div key={idx} style={{ color: 'black',  
-                                                flex: '1 1 45%', border: '0.5pt solid #eee', padding: '2px', 
-                                                fontSize: '7.5pt', borderRadius: '1px' 
-                                             }}>
-                                                <strong>{t(`common.${m.type.toLowerCase()}`)}:</strong> {m.liters}L<br/>
+                                            <div key={idx} style={{
+                                                color: 'black',
+                                                flex: '1 1 45%', border: '0.5pt solid #eee', padding: '2px',
+                                                fontSize: '7.5pt', borderRadius: '1px'
+                                            }}>
+                                                <strong>{t(`common.${m.type.toLowerCase()}`)}:</strong> {m.liters}L<br />
                                                 F:{m.avgFat} S:{m.avgSnf}
                                             </div>
                                         ))}
                                     </div>
-                                    
-                                    <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', marginBottom: '2px'  }}>
+
+                                    <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
                                         <span>{t('billing.billPrint.grandTotal')}:</span>
-                                        <span style={{ color: 'black',  fontWeight: 'bold'  }}>{thermalData.summary.totalQty} L</span>
+                                        <span style={{ color: 'black', fontWeight: 'bold' }}>{thermalData.summary.totalQty} L</span>
                                     </div>
-                                    <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', marginBottom: '2px'  }}>
+                                    <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
                                         <span>{t('billing.billPrint.totalMilkBill')}:</span>
                                         <span>₹{formatByPrintSetting(thermalData.summary.totalAmount, thermalData.printSettings || { showDecimals: true })}</span>
                                     </div>
-                                    <div style={{ color: 'black',  display: 'flex', justifyContent: 'space-between', marginBottom: '2px'  }}>
+                                    <div style={{ color: 'black', display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
                                         <span>{t('billing.billPrint.totalDeductions')}:</span>
-                                        <span style={{  color: 'black'  }}>-₹{formatByPrintSetting(thermalData.summary.totalDeduction, thermalData.printSettings || { showDecimals: true })}</span>
+                                        <span style={{ color: 'black' }}>-₹{formatByPrintSetting(thermalData.summary.totalDeduction, thermalData.printSettings || { showDecimals: true })}</span>
                                     </div>
                                     {/* Thev Savings — shown inline (one row per scheme) */}
                                     {(thermalData.summary.thevEntries || []).length > 0
@@ -3144,35 +3218,38 @@ function Billing({ user }) {
                                             </div>
                                         )
                                     }
-                                    
-                                    <div style={{ color: 'black',  
-                                        display: 'flex', justifyContent: 'space-between', 
+
+                                    <div style={{
+                                        color: 'black',
+                                        display: 'flex', justifyContent: 'space-between',
                                         marginTop: '6px', paddingTop: '6px', borderTop: '1px solid #000',
-                                        fontSize: '10pt', fontWeight: 'bold' 
-                                     }}>
+                                        fontSize: '10pt', fontWeight: 'bold'
+                                    }}>
                                         <span>{t('billing.billPrint.netPayable')}:</span>
                                         <span>₹{formatByPrintSetting(thermalData.summary.netAmount, thermalData.printSettings || { showDecimals: true }, { truncate: true })}</span>
                                     </div>
                                 </div>
 
-                                <div style={{ color: 'black',  
-                                    marginTop: '12px', textAlign: 'center', fontSize: '7.5pt', 
-                                    borderTop: '1px dashed #444', paddingTop: '6px' 
-                                 }}>
+                                <div style={{
+                                    color: 'black',
+                                    marginTop: '12px', textAlign: 'center', fontSize: '7.5pt',
+                                    borderTop: '1px dashed #444', paddingTop: '6px'
+                                }}>
                                     <p style={{ margin: '0 0 2px 0' }}>{t('billing.billPrint.errorCorrection')}</p>
                                     <p style={{ margin: '0 0 8px 0', fontSize: '7pt' }}>{t('billing.billPrint.deductionAsOf', { date: thermalData.endDate })}</p>
-                                    <div style={{ color: 'black',  marginTop: '12px', borderTop: '0.5pt solid #aaa', width: '60%', margin: '15px auto 5px'  }}></div>
+                                    <div style={{ color: 'black', marginTop: '12px', borderTop: '0.5pt solid #aaa', width: '60%', margin: '15px auto 5px' }}></div>
                                     <p style={{ margin: 0 }}>{t('billing.billPrint.signature')}</p>
                                     <p style={{ margin: '8px 0 0 0', fontSize: '6.5pt', color: 'black' }}>Powered by DudhSakha</p>
                                 </div>
                             </div>
                         </div>
 
-                        <div className="modal-footer" style={{ color: 'black', 
+                        <div className="modal-footer" style={{
+                            color: 'black',
                             padding: '16px 24px', borderTop: '1px solid #e5e7eb',
                             display: 'flex', gap: '12px', background: 'transparent',
                             borderBottomLeftRadius: '20px', borderBottomRightRadius: '20px'
-                         }}>
+                        }}>
                             <button
                                 onClick={() => setShowThermalModal(false)}
                                 style={{
@@ -3214,22 +3291,25 @@ function Billing({ user }) {
                 const isPaid = billPayments.some(p => p.farmer_id === selectedBill.farmer_id);
                 const { deductions: effDeds, totalDeduction: effTotal, netAmount: effNet } = getEffectiveDeductions(selectedBill, deductionOverrides);
                 return (
-                    <div style={{ color: 'black', 
+                    <div style={{
+                        color: 'black',
                         position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
                         background: 'rgba(0,0,0,0.5)', zIndex: 9999,
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         backdropFilter: 'blur(4px)'
-                     }} onClick={() => setShowBillModal(false)}>
-                        <div style={{ color: 'black', 
+                    }} onClick={() => setShowBillModal(false)}>
+                        <div style={{
+                            color: 'black',
                             background: 'white', borderRadius: '24px', width: '95%', maxWidth: '640px',
                             maxHeight: '90vh', overflow: 'auto',
                             boxShadow: '0 25px 50px rgba(0,0,0,0.25)'
-                         }} onClick={e => e.stopPropagation()}>
+                        }} onClick={e => e.stopPropagation()}>
                             {/* Modal Header */}
-                            <div style={{ color: 'black', 
+                            <div style={{
+                                color: 'black',
                                 padding: '24px 28px 16px', borderBottom: '1px solid #f1f5f9',
                                 display: 'flex', justifyContent: 'space-between', alignItems: 'center'
-                             }}>
+                            }}>
                                 <div>
                                     <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '800', color: 'black' }}>
                                         {selectedBill.farmer_name}
@@ -3247,14 +3327,16 @@ function Billing({ user }) {
                             </div>
 
                             {/* Gross Amount Card */}
-                            <div style={{ color: 'black',  padding: '16px 28px'  }}>
-                                <div style={{ color: 'black', 
+                            <div style={{ color: 'black', padding: '16px 28px' }}>
+                                <div style={{
+                                    color: 'black',
                                     display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px'
-                                 }}>
-                                    <div style={{ color: 'black', 
+                                }}>
+                                    <div style={{
+                                        color: 'black',
                                         background: 'transparent', borderRadius: '14px', padding: '14px',
                                         border: '1px solid #e2e8f0'
-                                     }}>
+                                    }}>
                                         <p style={{ margin: 0, fontSize: '12px', color: 'black', fontWeight: '600' }}>
                                             {t('billing.metrics.quantity', { defaultValue: 'Quantity' })}
                                         </p>
@@ -3262,10 +3344,11 @@ function Billing({ user }) {
                                             {selectedBill.total_quantity} L
                                         </p>
                                     </div>
-                                    <div style={{ color: 'black', 
+                                    <div style={{
+                                        color: 'black',
                                         background: '#fef3c7', borderRadius: '14px', padding: '14px',
                                         border: '1px solid #fde68a'
-                                     }}>
+                                    }}>
                                         <p style={{ margin: 0, fontSize: '12px', color: '#92400e', fontWeight: '600' }}>
                                             {t('billing.metrics.grossAmount', { defaultValue: 'Gross' })}
                                         </p>
@@ -3273,10 +3356,11 @@ function Billing({ user }) {
                                             ₹{selectedBill.total_amount}
                                         </p>
                                     </div>
-                                    <div style={{ color: 'black', 
+                                    <div style={{
+                                        color: 'black',
                                         background: '#dcfce7', borderRadius: '14px', padding: '14px',
                                         border: '1px solid #bbf7d0'
-                                     }}>
+                                    }}>
                                         <p style={{ margin: 0, fontSize: '12px', color: '#15803d', fontWeight: '600' }}>
                                             {t('billing.metrics.netPayable', { defaultValue: 'Net Payable' })}
                                         </p>
@@ -3319,26 +3403,27 @@ function Billing({ user }) {
 
                             {/* Deductions Section */}
                             {effDeds.length > 0 && (
-                                <div style={{ color: 'black',  padding: '0 28px 16px'  }}>
+                                <div style={{ color: 'black', padding: '0 28px 16px' }}>
                                     <h3 style={{
                                         fontSize: '15px', fontWeight: '700', color: 'black',
                                         margin: '0 0 12px', display: 'flex', alignItems: 'center', gap: '8px'
                                     }}>
                                         <IndianRupee size={16} />
                                         {t('billing.billPrint.deduction', { defaultValue: 'Deductions' })}
-                                        <span style={{ 
+                                        <span style={{
                                             fontSize: '12px', color: 'black', fontWeight: '800',
                                             marginLeft: 'auto'
-                                         }}>
+                                        }}>
                                             -{`₹${effTotal.toFixed(2)}`}
                                         </span>
                                     </h3>
-                                    <div style={{ color: 'black',  display: 'flex', flexDirection: 'column', gap: '8px'  }}>
+                                    <div style={{ color: 'black', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                         {effDeds.map((d, idx) => {
                                             const isEnabled = d.isEnabled;
                                             const isEditing = editingDeduction === d.id;
                                             return (
-                                                <div key={d.id || idx} style={{ color: 'black', 
+                                                <div key={d.id || idx} style={{
+                                                    color: 'black',
                                                     display: 'flex', flexDirection: 'column', gap: '0',
                                                     padding: '12px 16px',
                                                     background: isEnabled ? '#ffffff' : '#f9fafb',
@@ -3346,138 +3431,139 @@ function Billing({ user }) {
                                                     border: isEnabled ? '1px solid #e2e8f0' : '1px solid #f1f5f9',
                                                     opacity: isEnabled ? 1 : 0.6,
                                                     transition: 'all 0.2s'
-                                                 }}>
+                                                }}>
                                                     {/* Top row: toggle + name + amount */}
-                                                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '12px'  }}>
-                                                    {/* Toggle Switch */}
-                                                    {!isPaid && (
-                                                        <button
-                                                            onClick={() => toggleDeductionEnabled(d.id)}
-                                                            style={{
-                                                                background: 'none', border: 'none', cursor: 'pointer',
-                                                                padding: '2px', display: 'flex', alignItems: 'center',
-                                                                color: isEnabled ? '#10b981' : '#d1d5db'
-                                                            }}
-                                                            title={isEnabled ? 'Disable deduction' : 'Enable deduction'}
-                                                        >
-                                                            {isEnabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
-                                                        </button>
-                                                    )}
-
-                                                    {/* Deduction Info */}
-                                                    <div style={{ color: 'black',  flex: 1  }}>
-                                                        <div style={{
-                                                            fontSize: '14px', fontWeight: '700', color: 'black',
-                                                            textDecoration: isEnabled ? 'none' : 'line-through'
-                                                        }}>
-                                                            {d.name}
-                                                        </div>
-                                                        {d.type && <div style={{ fontSize: '11px', color: 'black', marginTop: '1px', textTransform: 'capitalize' }}>{d.type}</div>}
-                                                    </div>
-
-                                                    {/* Amount / Edit */}
-                                                    {isEditing ? (
-                                                        <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '6px'  }}>
-                                                            <input
-                                                                type="text"
-                                                                inputMode="decimal"
-                                                                pattern="[0-9]*\.?[0-9]*"
-                                                                value={tempAmount}
-                                                                onChange={e => {
-                                                                    const val = e.target.value;
-                                                                    if (/^[0-9]*\.?[0-9]*$/.test(val)) {
-                                                                        setTempAmount(val);
-                                                                    }
-                                                                }}
-                                                                onKeyDown={e => { if (e.key === 'Enter') applyCustomAmount(d.id); if (e.key === 'Escape') setEditingDeduction(null); }}
-                                                                autoFocus
+                                                    <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                                        {/* Toggle Switch */}
+                                                        {!isPaid && (
+                                                            <button
+                                                                onClick={() => toggleDeductionEnabled(d.id)}
                                                                 style={{
-                                                                    width: '90px', padding: '6px 10px',
-                                                                    border: '2px solid #6366f1', borderRadius: '8px',
-                                                                    fontSize: '14px', fontWeight: '700',
-                                                                    textAlign: 'right', outline: 'none',
-                                                                    appearance: 'none', MozAppearance: 'textfield',
-                                                                    WebkitAppearance: 'none'
+                                                                    background: 'none', border: 'none', cursor: 'pointer',
+                                                                    padding: '2px', display: 'flex', alignItems: 'center',
+                                                                    color: isEnabled ? '#10b981' : '#d1d5db'
                                                                 }}
-                                                            />
-                                                            <button onClick={() => applyCustomAmount(d.id)} style={{
-                                                                background: '#10b981', color: 'white', border: 'none',
-                                                                borderRadius: '8px', padding: '6px 10px',
-                                                                cursor: 'pointer', fontWeight: '700', fontSize: '13px'
-                                                            }}>✓</button>
-                                                            <button onClick={() => setEditingDeduction(null)} style={{
-                                                                background: '#f1f5f9', color: 'black', border: 'none',
-                                                                borderRadius: '8px', padding: '6px 10px',
-                                                                cursor: 'pointer', fontSize: '13px'
-                                                            }}>✕</button>
+                                                                title={isEnabled ? 'Disable deduction' : 'Enable deduction'}
+                                                            >
+                                                                {isEnabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
+                                                            </button>
+                                                        )}
+
+                                                        {/* Deduction Info */}
+                                                        <div style={{ color: 'black', flex: 1 }}>
+                                                            <div style={{
+                                                                fontSize: '14px', fontWeight: '700', color: 'black',
+                                                                textDecoration: isEnabled ? 'none' : 'line-through'
+                                                            }}>
+                                                                {d.name}
+                                                            </div>
+                                                            {d.type && <div style={{ fontSize: '11px', color: 'black', marginTop: '1px', textTransform: 'capitalize' }}>{d.type}</div>}
                                                         </div>
-                                                    ) : (
-                                                        <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '8px'  }}>
-                                                            <span style={{ 
-                                                                fontSize: '16px', fontWeight: '800',
-                                                                color: isEnabled ? '#ef4444' : '#94a3b8'
-                                                             }}>
-                                                                {isEnabled ? `-₹${formatMoney(d.effectiveAmount)}` : '₹0'}
-                                                            </span>
-                                                            {d.isCustom && (
-                                                                <button onClick={() => resetCustomAmount(d.id)} style={{
-                                                                    background: '#fef3c7', border: 'none', borderRadius: '6px',
-                                                                    padding: '2px 6px', cursor: 'pointer', color: '#92400e',
-                                                                    fontSize: '11px', fontWeight: '700'
-                                                                }}>Reset</button>
-                                                            )}
-                                                            {!isPaid && isEnabled && (
-                                                                <button
-                                                                    onClick={() => {
-                                                                        setEditingDeduction(d.id);
-                                                                        setTempAmount(d.effectiveAmount.toString());
+
+                                                        {/* Amount / Edit */}
+                                                        {isEditing ? (
+                                                            <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                                <input
+                                                                    type="text"
+                                                                    inputMode="decimal"
+                                                                    pattern="[0-9]*\.?[0-9]*"
+                                                                    value={tempAmount}
+                                                                    onChange={e => {
+                                                                        const val = e.target.value;
+                                                                        if (/^[0-9]*\.?[0-9]*$/.test(val)) {
+                                                                            setTempAmount(val);
+                                                                        }
                                                                     }}
+                                                                    onKeyDown={e => { if (e.key === 'Enter') applyCustomAmount(d.id); if (e.key === 'Escape') setEditingDeduction(null); }}
+                                                                    autoFocus
                                                                     style={{
-                                                                        background: '#f1f5f9', border: 'none',
-                                                                        borderRadius: '8px', padding: '5px',
-                                                                        cursor: 'pointer', color: '#6366f1',
-                                                                        display: 'flex', alignItems: 'center'
+                                                                        width: '90px', padding: '6px 10px',
+                                                                        border: '2px solid #6366f1', borderRadius: '8px',
+                                                                        fontSize: '14px', fontWeight: '700',
+                                                                        textAlign: 'right', outline: 'none',
+                                                                        appearance: 'none', MozAppearance: 'textfield',
+                                                                        WebkitAppearance: 'none'
                                                                     }}
-                                                                    title="Edit amount"
-                                                                >
+                                                                />
+                                                                <button onClick={() => applyCustomAmount(d.id)} style={{
+                                                                    background: '#10b981', color: 'white', border: 'none',
+                                                                    borderRadius: '8px', padding: '6px 10px',
+                                                                    cursor: 'pointer', fontWeight: '700', fontSize: '13px'
+                                                                }}>✓</button>
+                                                                <button onClick={() => setEditingDeduction(null)} style={{
+                                                                    background: '#f1f5f9', color: 'black', border: 'none',
+                                                                    borderRadius: '8px', padding: '6px 10px',
+                                                                    cursor: 'pointer', fontSize: '13px'
+                                                                }}>✕</button>
+                                                            </div>
+                                                        ) : (
+                                                            <div style={{ color: '#6b7280', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                <span style={{
+                                                                    fontSize: '16px', fontWeight: '800',
+                                                                    color: isEnabled ? '#ef4444' : '#94a3b8'
+                                                                }}>
+                                                                    {isEnabled ? `-₹${formatMoney(d.effectiveAmount)}` : '₹0'}
+                                                                </span>
+                                                                {d.isCustom && (
+                                                                    <button onClick={() => resetCustomAmount(d.id)} style={{
+                                                                        background: '#fef3c7', border: 'none', borderRadius: '6px',
+                                                                        padding: '2px 6px', cursor: 'pointer', color: '#92400e',
+                                                                        fontSize: '11px', fontWeight: '700'
+                                                                    }}>Reset</button>
+                                                                )}
+                                                                {!isPaid && isEnabled && (
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            setEditingDeduction(d.id);
+                                                                            setTempAmount(d.effectiveAmount.toString());
+                                                                        }}
+                                                                        style={{
+                                                                            background: '#f1f5f9', border: 'none',
+                                                                            borderRadius: '8px', padding: '5px',
+                                                                            cursor: 'pointer', color: '#6366f1',
+                                                                            display: 'flex', alignItems: 'center'
+                                                                        }}
+                                                                        title="Edit amount"
+                                                                    >
                                                                         <Edit3 size={14} />
                                                                     </button>
-                                                            )}
-                                                        </div>
-                                                    )}
+                                                                )}
+                                                            </div>
+                                                        )}
                                                     </div>
 
                                                     {/* Row 2: मागील बाकी / चालू कपात / येणे बाकी */}
                                                     {(d.prevBalance || d.remaining) && isEnabled && (
-                                                        <div style={{ color: 'black', 
+                                                        <div style={{
+                                                            color: 'black',
                                                             display: 'flex', width: '100%',
                                                             marginTop: '10px', borderTop: '1px solid #f1f5f9', paddingTop: '10px',
                                                             borderRadius: '10px', overflow: 'hidden',
                                                             background: 'transparent', border: '1px solid #e2e8f0'
-                                                         }}>
-                                                            <div style={{ color: 'black',  flex: 1, textAlign: 'center', padding: '6px 4px'  }}>
+                                                        }}>
+                                                            <div style={{ color: 'black', flex: 1, textAlign: 'center', padding: '6px 4px' }}>
                                                                 <div style={{ fontSize: '10px', color: 'black', fontWeight: '600', letterSpacing: '0.3px' }}>
                                                                     {t('billing.billPrint.previousBalance', { defaultValue: 'मागील बाकी' })}
                                                                 </div>
-                                                                <div style={{  fontSize: '14px', fontWeight: '800', color: 'black', marginTop: '3px'  }}>
+                                                                <div style={{ fontSize: '14px', fontWeight: '800', color: 'black', marginTop: '3px' }}>
                                                                     {d.prevBalance ? `₹${formatMoney(d.prevBalance, 2, { truncate: true })}` : '—'}
                                                                 </div>
                                                             </div>
-                                                            <div style={{ color: 'black',  width: '1px', background: '#e2e8f0', margin: '6px 0'  }} />
-                                                            <div style={{ color: 'black',  flex: 1, textAlign: 'center', padding: '6px 4px'  }}>
+                                                            <div style={{ color: 'black', width: '1px', background: '#e2e8f0', margin: '6px 0' }} />
+                                                            <div style={{ color: 'black', flex: 1, textAlign: 'center', padding: '6px 4px' }}>
                                                                 <div style={{ fontSize: '10px', color: 'black', fontWeight: '600', letterSpacing: '0.3px' }}>
                                                                     {t('billing.billPrint.currentDeduction', { defaultValue: 'चालू कपात' })}
                                                                 </div>
-                                                                <div style={{  fontSize: '14px', fontWeight: '800', color: 'black', marginTop: '3px'  }}>
+                                                                <div style={{ fontSize: '14px', fontWeight: '800', color: 'black', marginTop: '3px' }}>
                                                                     {`-₹${formatMoney(d.effectiveAmount)}`}
                                                                 </div>
                                                             </div>
-                                                            <div style={{ color: 'black',  width: '1px', background: '#e2e8f0', margin: '6px 0'  }} />
-                                                            <div style={{ color: 'black',  flex: 1, textAlign: 'center', padding: '6px 4px'  }}>
+                                                            <div style={{ color: 'black', width: '1px', background: '#e2e8f0', margin: '6px 0' }} />
+                                                            <div style={{ color: 'black', flex: 1, textAlign: 'center', padding: '6px 4px' }}>
                                                                 <div style={{ fontSize: '10px', color: 'black', fontWeight: '600', letterSpacing: '0.3px' }}>
                                                                     {t('billing.billPrint.remainingBalance', { defaultValue: 'येणे बाकी' })}
                                                                 </div>
-                                                                <div style={{  fontSize: '14px', fontWeight: '800', color: 'black', marginTop: '3px'  }}>
+                                                                <div style={{ fontSize: '14px', fontWeight: '800', color: 'black', marginTop: '3px' }}>
                                                                     {d.remaining ? `₹${formatMoney(d.remaining, 2, { truncate: true })}` : '—'}
                                                                 </div>
                                                             </div>
@@ -3492,11 +3578,12 @@ function Billing({ user }) {
                             )}
 
                             {/* Modal Footer / Actions */}
-                            <div style={{ color: 'black', 
+                            <div style={{
+                                color: 'black',
                                 padding: '16px 28px 24px',
                                 borderTop: '1px solid #f1f5f9',
                                 display: 'flex', gap: '10px'
-                             }}>
+                            }}>
                                 <button
                                     onClick={() => exportIndividualBill(getBillWithOverrides(selectedBill), true)}
                                     style={{
@@ -3514,14 +3601,16 @@ function Billing({ user }) {
                                     onClick={() => exportIndividualBill(getBillWithOverrides(selectedBill))}
                                     style={{
                                         flex: 1, padding: '12px', borderRadius: '14px',
-                                        border: '1px solid #e2e8f0', background: 'white',
-                                        color: 'black', fontWeight: '600', cursor: 'pointer',
+                                        border: '1px solid #e2e8f0',
+                                        background: 'linear-gradient(135deg, #4f46e5 0%, #6366f1 100%)',
+                                        color: 'white', fontWeight: '700', cursor: 'pointer',
                                         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                                        fontSize: '14px', transition: 'all 0.2s'
+                                        fontSize: '14px', transition: 'all 0.2s',
+                                        boxShadow: '0 4px 12px rgba(79, 70, 229, 0.25)'
                                     }}
                                 >
-                                    <Download size={18} />
-                                    {t('billing.tooltips.export', { defaultValue: 'Download' })}
+                                    <Printer size={18} />
+                                    {t('billing.tooltips.openAndPrint', { defaultValue: 'Open & Print' })}
                                 </button>
                                 {isPaid ? (
                                     <button
@@ -3568,22 +3657,24 @@ function Billing({ user }) {
 
             {/* ── Pay Loading Overlay ── */}
             {payLoading && (
-                <div style={{ color: 'black', 
+                <div style={{
+                    color: 'black',
                     position: 'fixed', inset: 0, zIndex: 99999,
                     background: 'rgba(0,0,0,0.55)',
                     backdropFilter: 'blur(6px)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     flexDirection: 'column', gap: '20px'
-                 }}>
+                }}>
                     {/* Card */}
-                    <div style={{ color: 'black', 
+                    <div style={{
+                        color: 'black',
                         background: 'white', borderRadius: '24px',
                         padding: '40px 56px', boxShadow: '0 24px 60px rgba(0,0,0,0.25)',
                         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px',
                         minWidth: '300px', textAlign: 'center'
-                     }}>
+                    }}>
                         {/* Animated spinner ring */}
-                        <div style={{ color: 'black',  position: 'relative', width: '72px', height: '72px'  }}>
+                        <div style={{ color: 'black', position: 'relative', width: '72px', height: '72px' }}>
                             <svg viewBox="0 0 72 72" style={{
                                 width: '72px', height: '72px',
                                 animation: 'billingSpinAnim 1s linear infinite',
@@ -3598,10 +3689,11 @@ function Billing({ user }) {
                                     strokeDashoffset="0" />
                             </svg>
                             {/* Center icon */}
-                            <div style={{ color: 'black', 
+                            <div style={{
+                                color: 'black',
                                 position: 'absolute', inset: 0,
                                 display: 'flex', alignItems: 'center', justifyContent: 'center'
-                             }}>
+                            }}>
                                 <CheckCircle size={28} style={{ color: '#10b981' }} />
                             </div>
                         </div>
@@ -3618,7 +3710,7 @@ function Billing({ user }) {
                         </div>
 
                         {/* Progress dots */}
-                        <div style={{ color: 'black',  display: 'flex', gap: '6px'  }}>
+                        <div style={{ color: 'black', display: 'flex', gap: '6px' }}>
                             {[0, 1, 2].map(i => (
                                 <div key={i} style={{
                                     width: '8px', height: '8px', borderRadius: '50%',

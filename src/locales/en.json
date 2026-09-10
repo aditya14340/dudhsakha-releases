@@ -1,0 +1,1289 @@
+{
+  "sidebar": {
+    "dashboard": "Dashboard",
+    "collection": "Collection",
+    "milkSale": "Milk Sale",
+    "billing": "Billing",
+    "farmers": "Farmers",
+    "corporateReceipt": "Corporate Receipt",
+    "deductions": "Deductions",
+    "thevManagement": "Thev (Deposits)",
+    "rates": "Rates",
+    "reports": "Reports",
+    "userManagement": "User Management",
+    "manageCustomers": "Manage Customers",
+    "members": "Members",
+    "settings": "Settings",
+    "logout": "Logout",
+    "logoutConfirm": "Are you sure you want to logout?",
+    "inventory": "Inventory"
+  },
+  "common": {
+    "loading": "Loading...",
+    "noInternet": "No Internet Connection. Please check your network.",
+    "backOnline": "Back Online",
+    "cow": "Cow",
+    "buffalo": "Buffalo"
+  },
+  "dashboard": {
+    "overview": "Overview",
+    "subtitle": "Dashboard & Statistics for",
+    "selectDate": "Select Date",
+    "collection": "Collection",
+    "today": "Today",
+    "collections": "Collections",
+    "selected": "Selected",
+    "cow": "Cow",
+    "buffalo": "Buffalo",
+    "totalFarmers": "Total Farmers",
+    "activeFarmers": "Active Registered Farmers",
+    "avgFat": "Avg Fat",
+    "avgSnf": "Avg SNF",
+    "avgSubtitle": "Average for selected date",
+    "estimatedProfit": "Estimated Profit",
+    "corporateReceipt": "Corporate Receipt",
+    "farmerPayment": "Farmer Payment",
+    "volDiff": "Volume Diff",
+    "gap": "Gap",
+    "sentToSangh": "Sent to Sangh",
+    "milkSupplied": "Milk supplied to Sangh",
+    "localSale": "Local Sale",
+    "morning": "Morning",
+    "evening": "Evening",
+    "localSaleProfit": "Local Sale Profit",
+    "earned": "earned",
+    "totalRevenue": "Total Revenue",
+    "entries": "entries",
+    "weeklyTrend": "Weekly Trend",
+    "daysEnding": "7 Days ending",
+    "collectionsList": "Collections List",
+    "entriesFor": "Entries for",
+    "noCollections": "No collections found",
+    "selectAnother": "Select another date to view data",
+    "table": {
+      "id": "ID",
+      "farmer": "Farmer",
+      "type": "Type",
+      "fatSnf": "Fat / SNF",
+      "qty": "Qty",
+      "rate": "Rate",
+      "amount": "Amount",
+      "shift": "Shift",
+      "action": "Action"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "System configuration and preferences",
+    "language": "Language",
+    "selectLanguage": "Select Language",
+    "saved": "Settings saved successfully!",
+    "rates": {
+      "title": "Local Sale Rates",
+      "subtitle": "Set selling rates for local milk sales",
+      "cow": "🐄 Cow Milk Rate (₹/L)",
+      "buffalo": "🐃 Buffalo Milk Rate (₹/L)",
+      "save": "Save Rates",
+      "saving": "Saving...",
+      "error": "Error saving selling rates"
+    },
+    "recycleBin": {
+      "title": "Recycle Bin",
+      "subtitle": "Deleted farmers can be restored or permanently removed",
+      "loading": "Loading...",
+      "empty": "Recycle Bin is empty",
+      "emptyHint": "Deleted farmers will appear here",
+      "table": {
+        "code": "Code",
+        "name": "Name",
+        "deletedOn": "Deleted On",
+        "actions": "Actions"
+      },
+      "restore": "Restore",
+      "deleteForever": "Delete Forever",
+      "permanentDeleteTitle": "Permanent Delete",
+      "confirmDelete": "Are you sure you want to permanently delete farmer:",
+      "warning": "⚠️ This action cannot be undone. The farmer record will be permanently removed from the system.",
+      "deletePermanently": "Delete Permanently",
+      "deleting": "Deleting...",
+      "cancel": "Cancel",
+      "alerts": {
+        "restoreError": "Error restoring farmer.",
+        "deleteError": "Error permanently deleting farmer.",
+        "loadError": "Error loading deleted farmers"
+      }
+    },
+    "calibration": {
+      "title": "FAT & SNF Calibration",
+      "subtitle": "Values outside these limits will be capped on save. Leave empty to disable.",
+      "fatLimits": "FAT LIMITS",
+      "snfLimits": "SNF LIMITS",
+      "saveBtn": "Save Calibration",
+      "saved": "Calibration saved successfully",
+      "alertTitle": "⚠️ Calibration Limit Reached",
+      "alertBody": "Reading was outside calibration limits and will be adjusted:\n\n{details}\n\nSave with adjusted values?",
+      "okSave": "OK, Save",
+      "cancel": "Cancel"
+    },
+    "printSettings": {
+      "title": "Print Settings",
+      "subtitle": "Customize entry receipt and billing prints",
+      "reset": "Reset to Default",
+      "entryReceipt": {
+        "title": "Entry Receipt Customize",
+        "showFat": "Show Fat Column",
+        "showSnf": "Show SNF Column",
+        "showRate": "Show Rate",
+        "showAmount": "Show Amount",
+        "showShift": "Show Shift",
+        "showWater": "Show Water %",
+        "qtyLabel": "Quantity Label Override",
+        "fatLabel": "Fat Label Override",
+        "snfLabel": "SNF Label Override"
+      },
+      "billing": {
+        "title": "Billing Print Customize",
+        "showFat": "Show Fat",
+        "showSnf": "Show SNF",
+        "showDecimals": "Show Decimal Points (Amounts)",
+        "printMode": "Bill Print Mode",
+        "modeNormal": "Normal (A4)",
+        "modeThermal": "Thermal (Mobile Receipt)",
+        "billNumberLanguage": "Bill Number Language",
+        "billNumberLangMarathi": "Marathi (१२३)",
+        "billNumberLangEnglish": "English (123)",
+        "billNumberLangHint": "Choose which digits to use for numbers on printed bills.",
+        "thermal": {
+          "preview": "Thermal Receipt Preview",
+          "bill": "MILK BILL",
+          "thankyou": "Thank You!",
+          "billPrint": "Print Receipt",
+          "close": "Close",
+          "labels": {
+            "date": "Date",
+            "fat": "Fat",
+            "snf": "SNF",
+            "rate": "Rate",
+            "qty": "Qty",
+            "amount": "Amt"
+          }
+        }
+      }
+    }
+  },
+  "collection": {
+    "titleNew": "New Collection",
+    "titleEdit": "Edit Collection",
+    "subtitle": "Record milk collection details",
+    "cancel": "Cancel",
+    "date": "Date",
+    "shift": "Shift",
+    "morning": "Morning",
+    "evening": "Evening",
+    "selectFarmer": "Select Farmer",
+    "milkType": "Milk Type",
+    "cow": "Cow",
+    "buffalo": "Buffalo",
+    "fat": "Fat %",
+    "snf": "SNF %",
+    "quantity": "Quantity (L)",
+    "save": "Save Entry",
+    "update": "Update Entry",
+    "summary": "Calculated Summary",
+    "rate": "Rate (per Liter)",
+    "totalAmount": "Total Amount",
+    "tip": "Tip",
+    "tipContent": "Rate is calculated automatically based on Fat and SNF values.",
+    "todaysCollections": "Today's Collections",
+    "noCollections": "No collections for today",
+    "collectionsAppear": "Collections added today will appear here",
+    "buffaloEntries": "Buffalo Entries",
+    "cowEntries": "Cow Entries",
+    "morningShift": "Morning Shift",
+    "eveningShift": "Evening Shift",
+    "records": "records",
+    "activeShift": "ACTIVE",
+    "table": {
+      "date": "Date",
+      "farmer": "Farmer",
+      "quantity": "Quantity",
+      "amount": "Amount",
+      "action": "Action"
+    },
+    "editTooltip": "Edit Collection",
+    "deleteTooltip": "Delete Collection",
+    "selectFarmerReq": "Please select a farmer",
+    "rateNotAvailable": "Rate not available for this Fat/SNF combination.",
+    "rateNotAvailableDate": "Rate not available for this Fat/SNF/Date combination",
+    "duplicateConfirm": "An entry already exists for this farmer.\n\nAre you sure you want to save this duplicate entry?",
+    "saveSuccess": "Entry saved successfully!",
+    "updateSuccess": "Entry updated successfully!",
+    "saveError": "Error saving collection",
+    "deleteConfirm": "Are you sure you want to delete this collection?",
+    "deleteError": "Failed to delete collection",
+    "rateFetchError": "Error fetching rate",
+    "voiceOn": "Voice ON",
+    "voiceOff": "Voice OFF",
+    "unusualQtyTitle": "Unusual Quantity Detected ⚠️",
+    "unusualQtyMsg": "The last {shift} entry for this farmer was {lastQty} L, but you entered {qty} L.\n\nAre you sure you want to save?",
+    "unusualQtyFallback": "You entered {qty} L. This seems unusually high.\n\nAre you sure you want to save?",
+    "yesSave": "Yes, Save",
+    "receipt": {
+      "title": "MILK RECEIPT",
+      "farmer": "Farmer:",
+      "type": "Type:",
+      "fat": "Fat:",
+      "snf": "SNF:",
+      "qty": "Qty:",
+      "rate": "Rate:",
+      "total": "TOTAL:",
+      "thankYou": "*** THANK YOU ***"
+    },
+    "csvUpload": {
+      "modalTitle": "CSV Rate Upload",
+      "dateLabel": "Effective Date for Imported Rates:",
+      "dateHelper": "All rates from the CSV will be saved with this effective date.",
+      "formatTitle": "Required CSV Format:",
+      "requirementsTitle": "Requirements:",
+      "reqColumns": "Required columns: fat, snf, rate",
+      "optColumn": "Optional column: milk_type",
+      "colNames": "Column names: Case-insensitive",
+      "values": "Values: Must be valid numbers",
+      "ratePositive": "Rate: Must be greater than 0",
+      "importantTitle": "Important:",
+      "importantText": "If ANY row has errors, the ENTIRE upload will be rejected.",
+      "stepsTitle": "Steps:",
+      "step1": "Set the effective date above",
+      "step2": "Click \"Proceed to Upload\" below",
+      "step3": "Select your CSV file",
+      "step4": "Review the loaded rates",
+      "step5": "Click \"Save Changes\" to save",
+      "cancel": "Cancel",
+      "proceed": "Proceed to Upload"
+    },
+    "newRateModal": {
+      "title": "Create New Rate Chart",
+      "subtitle": "Choose how you would like to add rates:",
+      "uploadOption": "Upload CSV File",
+      "uploadDesc": "Import rates from a CSV file",
+      "manualOption": "Enter Manually",
+      "manualDesc": "Fill in the rate matrix manually",
+      "cancel": "Cancel"
+    }
+  },
+  "milkSale": {
+    "title": "Milk Sale",
+    "subtitle": "Record milk sales to customers",
+    "newSale": "New Sale",
+    "saleDate": "Sale Date",
+    "customerName": "Customer Name",
+    "enterCustomerName": "Enter customer name",
+    "milkType": "Milk Type",
+    "buffalo": "Buffalo",
+    "cow": "Cow",
+    "quantity": "Quantity (Liters)",
+    "ratePerL": "Rate (per L)",
+    "totalAmount": "Total Amount",
+    "recordSale": "Record Sale",
+    "recentSales": "Recent Sales",
+    "recentSalesSubtitle": "Latest milk sales transactions",
+    "refresh": "Refresh",
+    "noSales": "No sales recorded yet",
+    "recordSaleToSee": "Record a sale to see it here",
+    "editSale": "Edit Sale",
+    "deleteSale": "Delete Sale",
+    "deleteConfirm": "Delete sale to \"{{name}}\" for {{qty}}L?",
+    "fillRequired": "Please fill in all required fields",
+    "success": "Sale recorded successfully!",
+    "error": "Failed to record sale",
+    "updateError": "Failed to update sale",
+    "deleteError": "Failed to delete sale",
+    "table": {
+      "date": "Date",
+      "customer": "Customer",
+      "type": "Type",
+      "qty": "Qty",
+      "amount": "Amount",
+      "action": "Action"
+    },
+    "paymentMethod": "Payment Method",
+    "cash": "Cash",
+    "udhari": "Udhari",
+    "partial": "Partial",
+    "amountReceived": "Amount Received (₹)",
+    "amountRemaining": "Remaining Balance (₹)",
+    "markAsPaid": "Mark as Paid",
+    "paid": "Paid",
+    "dairyName": "Dairy Name"
+  },
+  "billing": {
+    "title": "Billing Management",
+    "subtitle": "Calculate and manage milk bills",
+    "viewRegister": "View Payment Register",
+    "viewAllBills": "View All Bills",
+    "selectMonth": "Select Usage Month",
+    "dateRange": "Date Range",
+    "startDate": "Start Date",
+    "endDate": "End Date",
+    "ranges": {
+      "first": "1st to 10th",
+      "second": "11th to 20th",
+      "third": "21st to End of Month",
+      "custom": "Custom Date Range"
+    },
+    "exportAll": "Download Payment Register",
+    "period": "Period",
+    "metrics": {
+      "totalFarmers": "Total Farmers",
+      "inPeriod": "In selected period",
+      "quantity": "Quantity",
+      "collected": "Collected",
+      "grossAmount": "Gross Amount",
+      "beforeDeductions": "Before deductions",
+      "netPayable": "Net Payable",
+      "afterDeductions": "After deductions"
+    },
+    "loading": "Loading...",
+    "noData": "No collections found for the selected period",
+    "filter": {
+      "all": "All",
+      "paid": "Paid",
+      "unpaid": "Unpaid",
+      "allMilk": "All Milk",
+      "cow": "Cow",
+      "buffalo": "Buffalo"
+    },
+    "table": {
+      "code": "FARMER CODE",
+      "name": "NAME",
+      "phone": "PHONE",
+      "qty": "QTY (L)",
+      "collections": "COLLECTIONS",
+      "gross": "GROSS AMT",
+      "deductions": "DEDUCTIONS",
+      "net": "NET AMOUNT",
+      "actions": "ACTIONS"
+    },
+    "details": {
+      "title": "Collection Details",
+      "date": "Date",
+      "shift": "Shift",
+      "type": "Type",
+      "qty": "Qty",
+      "fat": "Fat",
+      "snf": "SNF",
+      "rate": "Rate",
+      "amount": "Amount",
+      "entries": "Entries"
+    },
+    "buttons": {
+      "downloadRegister": "Download Register",
+      "downloadAllBills": "Download All Bills"
+    },
+    "tooltips": {
+      "export": "Export PDF",
+      "markPaid": "Mark Paid",
+      "markUnpaid": "Mark Unpaid"
+    },
+    "messages": {
+      "noDataExport": "No billing data to export!",
+      "noDeductionsConfirm": "This bill has no deductions. Do you still want to mark it as paid?",
+      "paidConfirm": "Are you sure you want to mark this bill as paid?",
+      "paidSuccess": "Bill marked as paid!",
+      "unpaidConfirm": "Are you sure you want to mark this bill as unpaid?",
+      "unpaidSuccess": "Bill marked as unpaid!",
+      "errorPayment": "Error processing payment: ",
+      "errorRevert": "Error reverting payment: ",
+      "errorPdf": "Error creating PDF: "
+    },
+    "billPrint": {
+      "title": "Milk Bill",
+      "date": "Date",
+      "morning": "Morning",
+      "evening": "Evening",
+      "deduction": "Deduction",
+      "type": "Type",
+      "fat": "Fat",
+      "snf": "S.N.F.",
+      "rate": "Rate",
+      "amount": "Amt",
+      "liters": "Ltr",
+      "deductionName": "Ded.Name",
+      "initial": "Prev.Bal",
+      "balance": "Curr.Ded",
+      "payable": "Rem.Bal",
+      "total": "Total",
+      "grandTotal": "Grand Total",
+      "signature": "Signature",
+      "bankBharana": "Bank Deposit",
+      "billNo": "Bill No.",
+      "to": "to",
+      "errorCorrection": "Error & Omissions Excepted - Thank You",
+      "deductionAsOf": "Deduction as of {{date}}",
+      "branch": "Branch",
+      "mainBranch": "Main Branch",
+      "period": "Period",
+      "farmerCode": "Code",
+      "farmerName": "Name",
+      "buffaloMilk": "Buf.Milk",
+      "cowMilk": "Cow Milk",
+      "milkBill": "Milk Bill",
+      "previousBalance": "Prev.Bal",
+      "currentDeduction": "Curr.",
+      "remainingBalance": "Rem.",
+      "totalLiters": "Total Ltr",
+      "avgFat": "Fat",
+      "avgSnf": "SNF",
+      "netPayable": "Net Payable",
+      "daysBill": "{{days}} Days Bill",
+      "totalMilkBill": "Total Milk Bill",
+      "totalDeductions": "Total Deductions",
+      "bank": "Bank",
+      "entries": "Entries",
+      "thevSavingsBalance": "Thev Balance",
+      "thevSavingsDeposited": "Thev Deposited"
+    },
+    "billSummary": {
+      "title": "Bill Summary",
+      "collection": "Collection",
+      "code": "Code",
+      "name": "Name",
+      "liters": "Liters",
+      "fat": "Fat",
+      "snf": "SNF",
+      "rate": "Rate",
+      "amount": "Amount",
+      "total": "Total",
+      "deduction": "Deduction",
+      "netPayable": "Net Payable",
+      "bank": "Bank",
+      "daysBillSummary": "{{days}} Days Bill Summary"
+    },
+    "thermal": {
+      "tooltip": "Thermal Print",
+      "receipt": "BILL RECEIPT",
+      "farmer": "Farmer:",
+      "type": "Type:",
+      "collections": "Collections",
+      "date": "Date",
+      "shift": "S",
+      "m": "M",
+      "e": "E",
+      "qty": "Qty",
+      "fatSnf": "F/SNF",
+      "rate": "Rate",
+      "amt": "Amt",
+      "totalQty": "Total Qty:",
+      "totalAmt": "Total Amt:",
+      "deductions": "Deductions",
+      "netAmt": "NET PAYABLE:",
+      "thankYou": "THANK YOU!",
+      "poweredBy": "Powered by DudhSakha"
+    }
+  },
+  "register": {
+    "title": "Payment Register",
+    "srNo": "Sr.No.",
+    "farmerCode": "Farmer Code",
+    "sectionBuffalo": "Buffalo milk — payment register",
+    "sectionCow": "Cow milk — payment register",
+    "summaryBlockTitle": "Full summary (Buffalo / Cow / All members)",
+    "summaryBuffaloRow": "Buffalo milk — totals",
+    "summaryCowRow": "Cow milk — totals",
+    "summaryAllRow": "All members — grand total",
+    "name": "Member Name",
+    "morning": "Morning Milk",
+    "evening": "Evening Milk",
+    "total": "Total Milk",
+    "litres": "Ltr.",
+    "amount": "Amount",
+    "share": "Share",
+    "advance": "Advance",
+    "feed": "Feed",
+    "other": "Other",
+    "sign": "Sign",
+    "dairySign": "Dairy Manager Sign"
+  },
+  "farmers": {
+    "title": "Farmers",
+    "subtitle": "Manage farmer records and details",
+    "addFarmer": "Add Farmer",
+    "searchPlaceholder": "Search by name, code or mobile...",
+    "noFarmers": "No farmers registered yet",
+    "noFarmersStart": "Click \"Add Farmer\" to register your first farmer",
+    "noResults": "No farmers found",
+    "tryDifferent": "Try a different search term",
+    "table": {
+      "code": "Code",
+      "name": "Name",
+      "mobile": "Mobile",
+      "rateChart": "Rate Chart",
+      "address": "Address",
+      "membership": "Membership",
+      "joinDate": "Join Date",
+      "actions": "Actions"
+    },
+    "actions": {
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "pagination": {
+      "showing": "Showing {{start}} to {{end}} of {{total}} farmers",
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "modal": {
+      "titleAdd": "Add New Farmer",
+      "titleEdit": "Edit Farmer",
+      "sections": {
+        "personal": "Personal Information",
+        "details": "Additional Details",
+        "preferences": "Preferences & Access"
+      },
+      "labels": {
+        "code": "Farmer Code",
+        "mobile": "Mobile Number",
+        "memberStatus": "Membership Status",
+        "joiningDate": "Joining Date",
+        "name": "Full Name",
+        "nameLocal": "Name (Local Language)",
+        "address": "Address",
+        "bank": "Bank Account",
+        "aadhar": "Aadhar Number",
+        "email": "Email Address",
+        "defaultMilkType": "Default Milk Type",
+        "rateChart": "Rate Chart",
+        "rateChartHint": "Rate chart used when recording milk collections for this farmer.",
+        "setPassword": "Set Password *",
+        "changePassword": "Change Password"
+      },
+      "placeholders": {
+        "auto": "Auto-generated",
+        "mobile": "10-digit mobile number",
+        "name": "Enter full name",
+        "nameLocal": "Enter name in local language",
+        "address": "Village, Taluka, Dist.",
+        "bank": "Account Number",
+        "aadhar": "12-digit Aadhar",
+        "email": "Enter email address",
+        "leaveBlank": "Leave blank to keep current",
+        "minChars": "Minimum 6 characters"
+      },
+      "options": {
+        "member": "Member",
+        "nonMember": "Non-Member",
+        "buffalo": "Buffalo",
+        "cow": "Cow"
+      },
+      "hints": {
+        "editPassword": "Enter new password or leave blank.",
+        "newPassword": "Farmer will use this to login."
+      },
+      "buttons": {
+        "cancel": "Cancel",
+        "save": "Save Farmer",
+        "update": "Update Farmer"
+      }
+    },
+    "delete": {
+      "title": "Delete Farmer",
+      "confirm": "Are you sure you want to delete <b>{{name}}</b> ({{code}})?",
+      "choose": "Choose how you want to handle existing data:",
+      "option1": {
+        "title": "Move to Recycle Bin",
+        "desc": "Keep all milk records. Farmer can be restored later."
+      },
+      "option2": {
+        "title": "Delete Permanently",
+        "desc": "Permanently remove farmer and ALL their milk collection history."
+      },
+      "errors": {
+        "save": "Error saving farmer.",
+        "delete": "Error deleting farmer.",
+        "deleteData": "Error deleting farmer with data."
+      }
+    },
+    "errors": {
+      "duplicateCode": "Farmer Code {{code}} is already in use."
+    }
+  },
+  "federation": {
+    "title": "Corporate Receipt",
+    "subtitle": "Record receipts from milk union / federation",
+    "totalReceipts": "Total Receipts",
+    "totalQuantity": "Total Milk",
+    "totalAmount": "Total Amount",
+    "form": {
+      "addTitle": "Add Corporate Receipt",
+      "editTitle": "Edit Receipt",
+      "date": "Date",
+      "shift": "Shift",
+      "milkType": "Milk Type",
+      "quantity": "Quantity (L)",
+      "fat": "Fat %",
+      "snf": "SNF %",
+      "rate": "Rate (₹/L)",
+      "amount": "Amount (₹)",
+      "buttons": {
+        "save": "Save Receipt",
+        "update": "Update Receipt",
+        "cancel": "Cancel"
+      },
+      "placeholders": {
+        "rate": "Optional"
+      },
+      "alerts": {
+        "fillAll": "Please fill all required fields",
+        "saveError": "Error saving receipt",
+        "deleteError": "Error deleting receipt",
+        "deleteConfirm": "Are you sure you want to delete this receipt?"
+      }
+    },
+    "table": {
+      "title": "Receipt History",
+      "noReceipts": "No receipts yet",
+      "headers": {
+        "date": "Date",
+        "shift": "Shift",
+        "type": "Type",
+        "qty": "Qty (L)",
+        "fat": "Fat %",
+        "snf": "SNF %",
+        "amount": "Amount",
+        "actions": "Actions"
+      }
+    }
+  },
+  "deductions": {
+    "title": "Deductions",
+    "subtitle": "Track advances, feed and other expenses",
+    "form": {
+      "addTitle": "Add Deduction Type",
+      "editTitle": "Edit Deduction Type",
+      "assignTitle": "Assign Deduction to Farmer",
+      "name": "Deduction Name",
+      "type": "Type",
+      "defaultAmount": "Default Amount",
+      "selectFarmer": "Select Farmer",
+      "selectDeduction": "Deduction Type",
+      "amount": "Amount",
+      "startDate": "Start Date",
+      "totalTarget": "Total Target Amount",
+      "targetHelp": "Total amount to be recovered.",
+      "buttons": {
+        "save": "Save",
+        "update": "Update",
+        "assign": "Assign Deduction",
+        "cancel": "Cancel",
+        "addNew": "Add New Type",
+        "assignNew": "Assign New",
+        "masters": "Master Settings",
+        "assignments": "Farmer Assignments",
+        "history": "Deduction History"
+      },
+      "types": {
+        "manual": "Manual Input",
+        "fixed": "Fixed Amount",
+        "percentage": "Percentage",
+        "per_liter": "Per Liter",
+        "mpc": "MPC"
+      },
+      "placeholders": {
+        "name": "e.g. Feed, Advance",
+        "searchMasters": "Search deduction types...",
+        "searchAssignments": "Search by farmer name, code, or deduction...",
+        "searchFarmers": "Search by farmer name or code..."
+      },
+      "alerts": {
+        "saveError": "Error saving deduction type.",
+        "assignError": "Error assigning deduction.",
+        "deleteMasterConfirm": "Are you sure you want to delete this deduction type?",
+        "deleteAssignConfirm": "Stop this deduction for the farmer?"
+      }
+    },
+    "table": {
+      "headers": {
+        "name": "Name",
+        "type": "Type",
+        "defaultAmount": "Default Amount",
+        "date": "Date",
+        "farmer": "Farmer",
+        "deduction": "Deduction",
+        "amountBill": "Amount/Bill",
+        "target": "Target",
+        "collected": "Collected",
+        "status": "Status",
+        "actions": "Actions"
+      },
+      "noMasters": "No deduction types found.",
+      "noAssignments": "No active deductions found.",
+      "noHistory": "No deduction history found.",
+      "historyHeaders": {
+        "paymentDate": "Payment Date",
+        "billPeriod": "Bill Period",
+        "farmer": "Farmer",
+        "deduction": "Deduction",
+        "amount": "Amount Deducted"
+      }
+    }
+  },
+  "rates": {
+    "title": "Milk Rates",
+    "subtitle": "Manage purchase rates for fat/SNF combinations",
+    "newRateEffectiveFrom": "New Rate Effective From",
+    "viewHistory": "View History",
+    "downloadRegister": "Download Register",
+    "downloadAllBills": "Download All Bills",
+    "noRatesFound": "No rates found",
+    "fatSnf": "Fat / SNF",
+    "setRangeTitle": "Set Rate Chart Range",
+    "rangeDesc": "Specify the FAT and SNF boundaries for your new rate chart. These values will determine the size of the table.",
+    "fatMin": "FAT Min",
+    "fatMax": "FAT Max",
+    "snfMin": "SNF Min",
+    "snfMax": "SNF Max",
+    "bulkUpdate": {
+      "title": "Bulk Update Rates",
+      "selectedCount": "Selected: {{count}} cells",
+      "range": "Range: Fat {{fatRange}}, SNF {{snfRange}}",
+      "action": "Action",
+      "setValue": "Set Value (=)",
+      "increaseBy": "Increase By (+)",
+      "decreaseBy": "Decrease By (-)",
+      "multiplyBy": "Multiply By (x)",
+      "value": "Value",
+      "enterValue": "Enter value...",
+      "applyTo": "Apply To",
+      "selectedCells": "Only Selected Cells",
+      "entireTable": "Entire Table (Visible)",
+      "applyParameters": "Apply Updates",
+      "successMessage": "Updated {{count}} cells",
+      "invalidNumber": "Please enter a valid number"
+    },
+    "buttons": {
+      "newRate": "New Rate",
+      "saveChanges": "Save Changes",
+      "saveNewRate": "Save New Rate",
+      "cancel": "Cancel",
+      "buffalo": "Buffalo",
+      "cow": "Cow",
+      "export": "Export Rate Chart",
+      "proceed": "Proceed"
+    },
+    "alerts": {
+      "selectDate": "Please select effective date",
+      "saveConfirm": "Save all {{type}} rates effective from {{date}}?",
+      "saveSuccess": "Rates saved successfully!",
+      "saveError": "Failed to save rates",
+      "discardConfirm": "Discard unsaved changes?"
+    },
+    "loading": "Loading Rates...",
+    "saving": "Saving Rates...",
+    "tooltips": {
+      "importCsv": "Import from CSV",
+      "exportCsv": "Export to CSV"
+    },
+    "chartPicker": {
+      "title": "Rate Charts",
+      "subtitle": "Select a rate chart to view or edit its Fat × SNF matrix.",
+      "sanghDefault": "Sangh (Default)",
+      "dates_one": "{{count}} date",
+      "dates_other": "{{count}} dates",
+      "createNew": "Create New Chart",
+      "newNameLabel": "✏️ New Rate Chart Name",
+      "namePlaceholder": "e.g. Vibhag A, Premium Rate, Old Rate...",
+      "createOpen": "Create & Open",
+      "cancel": "Cancel",
+      "enterName": "Please enter a chart name.",
+      "alreadyExists": "A rate chart with this name already exists."
+    }
+  },
+  "reports": {
+    "title": "Reports",
+    "subtitle": "Analyze your dairy data",
+    "generated": "Generated",
+    "dairySystem": "Dairy Management System",
+    "messages": {
+      "success": "{{title}} downloaded successfully!",
+      "error": "Failed to generate report: {{error}}",
+      "noFilterRequired": "No date filter required for this report."
+    },
+    "farmerRegister": {
+      "filterLabel": "Filter by Milk Type",
+      "all": "All Farmers"
+    },
+    "backup": {
+      "title": "Full Data Backup",
+      "description": "Download every record in the system as a comprehensive PDF.",
+      "button": "Download Full Backup",
+      "generating": "Generating..."
+    },
+    "buttons": {
+      "exportPdf": "Export PDF",
+      "exporting": "Exporting...",
+      "download": "Download",
+      "cancel": "Cancel"
+    },
+    "presets": {
+      "daily": {
+        "title": "Daily Collection",
+        "description": "List of all milk collections for today."
+      },
+      "monthly": {
+        "title": "Monthly Summary",
+        "description": "Daily aggregates for the current month."
+      },
+      "profit": {
+        "title": "Profit & Loss (Est.)",
+        "description": "Estimated profit calculation."
+      },
+      "payments": {
+        "title": "Payment History",
+        "description": "Log of all bill payments to farmers."
+      },
+      "farmers": {
+        "title": "Farmer Register",
+        "description": "Complete list of registered farmers."
+      },
+      "sales": {
+        "title": "Local Sales",
+        "description": "Records of milk sold locally."
+      },
+      "federation": {
+        "title": "Union Receipts",
+        "description": "Receipts from the milk union."
+      },
+      "deductions": {
+        "title": "Deductions Report",
+        "description": "Active deductions and recovery status."
+      },
+      "rates": {
+        "title": "Rate Chart",
+        "description": "Currently active purchase rates."
+      },
+      "top_producers": {
+        "title": "Top Producers",
+        "description": "Farmers ranked by total milk volume."
+      },
+      "low_quality": {
+        "title": "Quality Alerts",
+        "description": "Collections below quality standards."
+      },
+      "shift": {
+        "title": "Shift Analysis",
+        "description": "Comparison between morning and evening."
+      }
+    },
+    "pdf": {
+      "sections": {
+        "farmers": "1. Farmer Register",
+        "collections": "2. Recent Collections",
+        "sales": "3. Local Sales",
+        "federation": "4. Union Receipts",
+        "payments": "5. Bill Payment Log",
+        "deductions": "6. Active Deductions",
+        "rates": "7. Active Rate Chart",
+        "profit": "Profit Report",
+        "monthlySummary": "Monthly Summary",
+        "shiftComparison": "Shift Comparison",
+        "topProducers": "Top Producers",
+        "lowQuality": "Quality Alerts"
+      },
+      "headers": {
+        "code": "Code",
+        "name": "Name",
+        "phone": "Phone",
+        "village": "Village",
+        "bank": "Bank",
+        "ifsc": "IFSC",
+        "date": "Date",
+        "farmer": "Farmer",
+        "type": "Type",
+        "fat": "Fat",
+        "snf": "SNF",
+        "qty": "Qty",
+        "rate": "Rate",
+        "amt": "Amt",
+        "shift": "Shift",
+        "customer": "Customer",
+        "period": "Period",
+        "amount": "Amount",
+        "status": "Status",
+        "totalFixed": "Total/Fixed",
+        "collected": "Collected",
+        "rank": "Rank",
+        "totalEarnings": "Total Earnings",
+        "entries": "Entries",
+        "totalQty": "Total Qty",
+        "metric": "Metric",
+        "morning": "Morning Shift",
+        "evening": "Evening Shift"
+      },
+      "summary": {
+        "totalPaid": "Total Paid to Farmers",
+        "totalReceived": "Total Received from Union",
+        "grossProfit": "Gross Profit",
+        "totalQty": "Total Qty",
+        "totalAmount": "Total Amount",
+        "noDataToday": "(No entries for today, showing latest 50)"
+      }
+    }
+  },
+  "userManagement": {
+    "title": "User Management",
+    "subtitle": "Manage admin and staff accounts",
+    "buttons": {
+      "addUser": "Add User",
+      "edit": "Edit",
+      "delete": "Delete",
+      "cancel": "Cancel",
+      "save": "Save",
+      "create": "Create User",
+      "update": "Update User",
+      "saving": "Saving...",
+      "deleting": "Deleting..."
+    },
+    "banner": {
+      "title": "Dairy Login Code:",
+      "subtitle": "All staff must use this code with their username."
+    },
+    "table": {
+      "id": "ID",
+      "username": "Username",
+      "role": "Role",
+      "actions": "Actions",
+      "empty": "No users found"
+    },
+    "form": {
+      "username": "Username",
+      "password": "Password",
+      "role": "Role",
+      "admin": "Admin",
+      "employee": "Employee"
+    }
+  },
+  "manageCustomers": {
+    "title": "Customer Management",
+    "subtitle": "Manage local sale customers",
+    "addCustomer": "Add Customer",
+    "table": {
+      "name": "Name",
+      "mobile": "Mobile",
+      "actions": "Actions"
+    }
+  },
+  "members": {
+    "title": "Members",
+    "subtitle": "Member farmer records",
+    "table": {
+      "code": "Code",
+      "name": "Name",
+      "phone": "Mobile",
+      "status": "Status"
+    }
+  },
+  "inventory": {
+    "title": "Inventory Management",
+    "subtitle": "Track stock · Sell to farmers · Recover via deductions",
+    "tabs": {
+      "items": "Stock Items",
+      "stockin": "Stock In",
+      "sell": "Sell",
+      "transactions": "Transactions"
+    },
+    "metrics": {
+      "totalItems": "Total Items",
+      "stockValue": "Stock Value",
+      "totalSales": "Total Sales",
+      "transactions": "Transactions"
+    },
+    "items": {
+      "searchPlaceholder": "Search items...",
+      "addItem": "Add Item",
+      "headers": {
+        "itemName": "ITEM NAME",
+        "unit": "UNIT",
+        "currentStock": "CURRENT STOCK",
+        "actions": "ACTIONS"
+      },
+      "noItems": "No items yet. Click \"Add Item\" to get started.",
+      "lowStock": "Low",
+      "lowStockAlert": "Low stock!"
+    },
+    "stockIn": {
+      "title": "Add Stock",
+      "subtitle": "Record new inventory purchase",
+      "item": "Item",
+      "selectItem": "— Select an item —",
+      "quantity": "Quantity",
+      "ratePerUnit": "Rate per Unit (₹)",
+      "date": "Date",
+      "notes": "Notes (Optional)",
+      "notesPlaceholder": "Supplier, invoice no...",
+      "addStock": "Add Stock",
+      "saving": "Saving...",
+      "totalValue": "Total Value",
+      "fillQtyRate": "Fill qty & rate to see total",
+      "quickInfo": "Quick Info",
+      "itemsInCatalog": "Items in catalog:",
+      "totalTransactions": "Total transactions:",
+      "success": "Stock added successfully!",
+      "errors": {
+        "fillRequired": "Please fill item, quantity and rate.",
+        "addError": "Error adding stock:"
+      }
+    },
+    "sell": {
+      "title": "Sell to Farmer",
+      "subtitle": "Cash, Deduction, or Split payment",
+      "item": "Item",
+      "selectItem": "— Select an item —",
+      "farmer": "Farmer",
+      "searchFarmer": "Search farmer by name or code...",
+      "quantity": "Quantity",
+      "ratePerUnit": "Rate per Unit (₹)",
+      "date": "Date",
+      "paymentMode": "Payment Mode",
+      "paymentModes": {
+        "cash": "Cash",
+        "deduction": "Deduction",
+        "split": "Split"
+      },
+      "cashAmount": "Cash Amount (₹)",
+      "cashMax": "Max ₹{{max}}",
+      "cashLabel": "💵 Cash:",
+      "deductionLabel": "📋 Deduction:",
+      "deductionType": "Deduction Type",
+      "selectDeductionType": "— Select Deduction Type —",
+      "deductionHint": "ℹ️ A farmer deduction will be created and recovered automatically during next billing.",
+      "notes": "Notes (Optional)",
+      "notesPlaceholder": "Any additional notes...",
+      "recordSale": "Record Sale",
+      "recordingNotSale": "Recording Sale...",
+      "saleTotal": "Sale Total",
+      "availableStock": "Available Stock",
+      "insufficientStock": "Insufficient stock! Available: {{stock}}",
+      "fillQtyRate": "Fill qty & rate to see total",
+      "success": "Sale recorded successfully!",
+      "noFarmersFound": "No farmers found",
+      "errors": {
+        "fillRequired": "Please fill item, farmer, quantity and rate.",
+        "selectDeduction": "Please select a deduction type.",
+        "recordError": "Error recording sale:"
+      }
+    },
+    "transactions": {
+      "searchPlaceholder": "Search by item or farmer...",
+      "records": "records",
+      "headers": {
+        "date": "DATE",
+        "item": "ITEM",
+        "type": "TYPE",
+        "farmer": "FARMER",
+        "qty": "QTY",
+        "rate": "RATE",
+        "total": "TOTAL",
+        "payment": "PAYMENT"
+      },
+      "types": {
+        "stockIn": "Stock In",
+        "sale": "Sale"
+      },
+      "payment": {
+        "cash": "💵 Cash",
+        "deduction": "📋 Deduction",
+        "split": "✂️ Split"
+      },
+      "noTransactions": "No transactions yet.",
+      "deleteError": "Error deleting transaction:"
+    },
+    "modal": {
+      "addItem": "Add New Item",
+      "editItem": "Edit Item",
+      "itemName": "Item Name",
+      "itemNamePlaceholder": "e.g. Cattle Feed, Medicine...",
+      "unit": "Unit",
+      "description": "Description (Optional)",
+      "descriptionPlaceholder": "Short description...",
+      "cancel": "Cancel",
+      "addItemBtn": "Add Item",
+      "updateItemBtn": "Update Item",
+      "saving": "Saving...",
+      "deleteItem": "Delete Item",
+      "deleteConfirm": "This item has {{stock}} {{unit}} in stock. Delete \"{{name}}\"?",
+      "deleteConfirmNoStock": "Delete item \"{{name}}\"?",
+      "deleteError": "Error deleting item:",
+      "saveError": "Error saving item:"
+    }
+  },
+  "employeePermissions": {
+    "title": "Employee Permissions",
+    "subtitle": "Customize access for this employee",
+    "saveSuccess": "Permissions saved successfully!",
+    "saveError": "Failed to save permissions",
+    "loadError": "Failed to load permissions",
+    "resetToDefaults": "Reset to Defaults",
+    "save": "Save Permissions",
+    "saving": "Saving...",
+    "accessDeniedTitle": "Access Denied",
+    "accessDeniedMsg": "You do not have permission to access this section. Please contact your admin.",
+    "sections": {
+      "moduleAccess": "Module Access",
+      "moduleAccessSubtitle": "Control which sections this employee can visit",
+      "dataControls": "Data Controls",
+      "dataControlsSubtitle": "Control what actions this employee can perform on collection entries"
+    },
+    "permissions": {
+      "collection": "Milk Collection",
+      "collectionDesc": "Access the milk collection entry screen",
+      "milk_sale": "Milk Sale",
+      "milk_saleDesc": "Access the local milk sale screen",
+      "milk_sale_billing": "Local Sale Billing",
+      "milk_sale_billingDesc": "Access the local milk sale billing report screen",
+      "billing": "Billing",
+      "billingDesc": "View and manage billing & payments",
+      "rates": "Rate Chart",
+      "ratesDesc": "View and manage rate charts",
+      "deductions": "Deductions",
+      "deductionsDesc": "Manage farmer deductions",
+      "farmers": "Farmers",
+      "farmersDesc": "View and edit farmer records",
+      "members": "Members",
+      "membersDesc": "View and edit member records",
+      "reports": "Reports",
+      "reportsDesc": "View and export reports",
+      "advanced_reports": "Advanced Reports",
+      "advanced_reportsDesc": "Access bonus reports & advanced analytics",
+      "federation_receipt": "Corporate Receipt",
+      "federation_receiptDesc": "Manage federation / union receipts",
+      "inventory": "Inventory",
+      "inventoryDesc": "Access inventory management",
+      "manage_customers": "Manage Customers",
+      "manage_customersDesc": "View and manage local sale customers",
+      "can_view_past_data": "View Previous Entries",
+      "can_view_past_dataDesc": "Browse past dates to view old entries (read-only — cannot edit or save on past dates)",
+      "can_save_past_entry": "Save Entry for Past Dates",
+      "can_save_past_entryDesc": "Allow saving new collection entries on past dates (requires View Previous Entries)",
+      "can_edit_saved_entry": "Edit Saved Entries",
+      "can_edit_saved_entryDesc": "Edit or update an entry after it has been saved",
+      "can_delete_entry": "Delete Entries",
+      "can_delete_entryDesc": "Permanently delete a collection entry"
+    }
+  },
+  "billingCycle": {
+    "immediate": "Immediate Cash",
+    "10days": "10 Days",
+    "30days": "30 Days",
+    "label": "Billing Cycle"
+  },
+  "thev": {
+    "title": "Thev Management",
+    "subtitle": "Collect and manage farmer savings deposits",
+    "tabs": {
+      "masters": "Deposit Schemes",
+      "accounts": "Farmer Accounts & Balances",
+      "transactions": "Transactions & Passbook",
+      "refund": "Refund & History"
+    },
+    "stats": {
+      "totalAccounts": "Total Accounts",
+      "totalBalance": "Total Deposited Balance",
+      "totalRefunded": "Total Refunded",
+      "activeSchemes": "Active Schemes"
+    },
+    "masters": {
+      "title": "Deposit Scheme Management",
+      "addNew": "Add New Scheme",
+      "editTitle": "Edit Deposit Scheme",
+      "addTitle": "Add New Deposit Scheme",
+      "schemeName": "Scheme Name",
+      "schemeNamePlaceholder": "e.g. Diwali Savings Deposit",
+      "deductionType": "Deduction Type",
+      "defaultRate": "Default Rate / Amount",
+      "isActive": "Is Active",
+      "types": {
+        "per_liter": "Per Liter (e.g. ₹1/liter)",
+        "fixed_amount": "Fixed Amount Per Bill",
+        "percentage": "Percentage (%) of Bill Amount"
+      },
+      "noData": "No deposit schemes found.",
+      "deleteConfirm": "Delete this deposit scheme? Linked accounts will not be affected."
+    },
+    "accounts": {
+      "title": "Farmer Thev Accounts & Balances",
+      "assignNew": "Open New Account",
+      "assignTitle": "Assign Deposit Scheme to Farmer",
+      "selectFarmer": "Select Farmer",
+      "selectScheme": "Select Deposit Scheme",
+      "rate": "Rate / Amount",
+      "openingBalance": "Opening Balance (Old Accumulated Deposit)",
+      "startDate": "Start Date",
+      "currentBalance": "Current Balance",
+      "totalDeposited": "Total Deposited",
+      "totalRefunded": "Total Refunded",
+      "status": "Status",
+      "active": "Active",
+      "stopped": "Stopped",
+      "noData": "No farmer thev accounts found.",
+      "deleteConfirm": "Remove this thev account?",
+      "viewPassbook": "View Passbook",
+      "giveRefund": "Give Refund",
+      "searchPlaceholder": "Search by farmer name or code..."
+    },
+    "transactions": {
+      "title": "Transactions & Passbook",
+      "date": "Date",
+      "type": "Type",
+      "amount": "Amount",
+      "interest": "Interest/Bonus",
+      "balanceAfter": "Balance After",
+      "remarks": "Remarks",
+      "reference": "Reference",
+      "types": {
+        "deposit": "Deposit (Thev Deduction)",
+        "refund": "Refund",
+        "interest": "Interest/Bonus",
+        "opening": "Opening Balance"
+      },
+      "noData": "No transactions found for selected farmer.",
+      "selectFarmerPrompt": "Select a farmer to view transactions."
+    },
+    "refund": {
+      "title": "Give Thev Refund",
+      "historyTitle": "Refund History",
+      "dateRange": "Date Range (to calculate deposited amount)",
+      "fromDate": "From Date",
+      "toDate": "To Date",
+      "currentBalance": "Current Balance",
+      "depositedInRange": "Deposited in Selected Range",
+      "refundAmount": "Refund Amount (₹)",
+      "fullRefundBtn": "Refund Full Thev (All)",
+      "interestBonus": "Interest / Bonus (₹) [Optional]",
+      "remarks": "Remarks [Optional]",
+      "remarksPlaceholder": "e.g. Diwali Thev Refund",
+      "totalPayout": "Total Payout Amount",
+      "balanceAfterRefund": "Balance After Refund",
+      "confirmRefund": "Confirm Refund",
+      "printReceipt": "Print Receipt",
+      "successMsg": "Thev refund given successfully!",
+      "zeroBalance": "Balance is Zero (₹0)",
+      "selectFarmer": "Select Farmer",
+      "historyNoData": "No refunds found in selected date range.",
+      "farmer": "Farmer",
+      "refundDate": "Refund Date",
+      "paidAmount": "Amount Paid",
+      "interest": "Interest",
+      "totalPaid": "Total Paid"
+    },
+    "passbook": {
+      "title": "Thev Passbook / Statement",
+      "farmer": "Farmer",
+      "scheme": "Deposit Scheme",
+      "openingBal": "Opening Balance",
+      "currentBal": "Current Balance",
+      "totalDeposited": "Total Deposited",
+      "totalRefunded": "Total Refunded",
+      "printPassbook": "Print Passbook"
+    }
+  }
+}
