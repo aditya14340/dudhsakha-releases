@@ -1,95 +1,41 @@
 /**
- * ratesCache.js
- * -------------
- * Local CSV cache for milk rates.
- * Fixes rate fetch timing issues in Collection page by reading rates
- * from a local file instead of making live Supabase API calls.
+ * ratesCache.js  (v2 — HashMap, date-aware + closest-match)
+ * -----------------------------------------------------------
+ * Replaces the old CSV flat-row cache with a pre-indexed JSON HashMap.
  *
- * What is stored (ALL of the following per dairy):
- *   ✅ ALL milk types       — Buffalo, Cow, etc.
- *   ✅ ALL rate charts      — sangh, Vibhag A, custom names, etc.
- *   ✅ ALL effective dates  — full history
- *   ✅ Strictly isolated    — one CSV file per dairy_id, no cross-dairy bleed
+ * WHY THIS EXISTS:
+ *   The old CSV + useState approach had a race condition:
+ *   - rates:full-rebuild writes new CSV to disk, fires rates:cache-updated
+ *   - Collection.jsx starts async IPC to read the new CSV → calls setRatesCache(newData)
+ *   - But React setState is async-batched: the OLD array is still in state
+ *   - If the user enters fat/snf RIGHT NOW, lookupRateFromCache hits the OLD cache
+ *   - Returns a stale/wrong rate. Supabase fallback is skipped. Entry saved with wrong rate.
  *
- * CSV format (per row):
- *   milk_type,fat,snf,rate,effective_date,rate_type,dairy_id
- *   (all string fields are double-quoted to handle commas/spaces safely)
+ * HOW THIS FIXES IT:
+ *   - HashMap is stored in useRef (not useState) → assignment is synchronous, instant
+ *   - The rebuilt map is sent DIRECTLY in the rates:cache-updated event payload
+ *   - No second IPC round-trip, no async gap, no stale window possible
+ *   - Lookup uses a date-index for O(log k) date resolution, then O(1) rate access
  *
- * File location: Electron userData / rates_cache_{dairy_id}.csv
+ * WHAT IS TRACKED (same as old CSV, same as Supabase query):
+ *   ✅ dairy_id      — map is per-dairy file; isolated at load time
+ *   ✅ milk_type     — 'buffalo' / 'cow' (case-insensitive, in key)
+ *   ✅ rate_type     — all charts: sangh, Vibhag A, custom names (in key)
+ *   ✅ effective_date — ALL dates stored; lookupRate picks latest <= collection date
+ *   ✅ fat + snf     — exact match first; closest match fallback if no exact row
+ *   ✅ sangh fallback — if farmer's chart has no data, falls back to 'sangh'
+ *   ✅ Supabase fallback — returns null if nothing found → caller uses Supabase
+ *
+ * HashMap key formats (written by electron/main.js buildRatesHashMap):
+ *   Rate rows:      "{milkType}|{fat}|{snf}|{rateType}|{date}"  → rate (number)
+ *   Date index:     "__dates__{milkType}|{rateType}"             → ["2026-09-01", ...] (sorted ASC)
+ *   Farmer map:     "farmer:{farmerId}"                          → rateType (string)
+ *   Debug stamp:    "__builtAt"                                  → ISO timestamp
+ *
+ * File location: Electron userData / rates_hashmap_{dairy_id}.json
  */
 
-// ─── CSV Helpers ────────────────────────────────────────────────────────────
-
-/**
- * Parse a single CSV line respecting double-quoted fields.
- * Handles fields like "Vibhag, A" that contain commas.
- */
-function parseQuotedCSVLine(line) {
-    const result = [];
-    let current = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') {
-            if (inQuotes && line[i + 1] === '"') {
-                current += '"'; i++; // escaped inner quote
-            } else {
-                inQuotes = !inQuotes;
-            }
-        } else if (ch === ',' && !inQuotes) {
-            result.push(current);
-            current = '';
-        } else {
-            current += ch;
-        }
-    }
-    result.push(current);
-    return result;
-}
-
-/**
- * Parse CSV string → array of rate objects.
- * Returns [] if CSV is empty / malformed.
- *
- * @param {string} csvContent
- * @returns {Array}
- */
-function csvToRates(csvContent) {
-    if (!csvContent || typeof csvContent !== 'string') return [];
-    const lines = csvContent.trim().split('\n');
-    if (lines.length < 2) return [];
-
-    const result = [];
-    for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-
-        const parts = parseQuotedCSVLine(line);
-        if (parts.length < 7) continue;
-
-        const [milk_type, fatStr, snfStr, rateStr, effective_date, rate_type, dairy_id] = parts;
-
-        const fat  = parseFloat(fatStr);
-        const snf  = parseFloat(snfStr);
-        const rate = parseFloat(rateStr);
-
-        // Skip rows with invalid numbers
-        if (isNaN(fat) || isNaN(snf) || isNaN(rate)) continue;
-
-        result.push({
-            milk_type:      milk_type.trim(),
-            fat,
-            snf,
-            rate,
-            effective_date: effective_date.trim(),
-            rate_type:      rate_type.trim(),
-            dairy_id:       String(dairy_id).trim(), // always string — prevents number/string mismatch
-        });
-    }
-    return result;
-}
-
-// ─── IPC Helpers ─────────────────────────────────────────────────────────────
+// ─── IPC Helper ───────────────────────────────────────────────────────────────
 
 function isElectronAvailable() {
     return typeof window !== 'undefined' &&
@@ -97,116 +43,168 @@ function isElectronAvailable() {
            typeof window.electron.invoke === 'function';
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
+// ─── Internal Helpers ─────────────────────────────────────────────────────────
 
 /**
- * Load rates from local CSV cache file into memory.
- * Called once when Collection.jsx mounts.
+ * Given a sorted-ASC array of effective dates and a target collection date,
+ * return the latest date that is <= the collection date.
+ * Returns null if no date qualifies.
+ *
+ * ISO date strings (YYYY-MM-DD) sort and compare correctly as plain strings.
+ *
+ * @param {string[]} sortedDates  - ["2026-09-01", "2026-10-01", ...]
+ * @param {string}   targetDate   - Collection date "YYYY-MM-DD"
+ * @returns {string|null}
+ */
+function findLatestEffectiveDateFor(sortedDates, targetDate) {
+    if (!sortedDates || sortedDates.length === 0 || !targetDate) return null;
+    // Walk backward (largest date first) — find first that is <= targetDate
+    for (let i = sortedDates.length - 1; i >= 0; i--) {
+        if (sortedDates[i] <= targetDate) return sortedDates[i];
+    }
+    return null; // all dates are in the future relative to targetDate
+}
+
+/**
+ * Scan all rate rows for a given milkType+rateType+date in the map and return
+ * the one with the smallest |fat - fatTarget| + |snf - snfTarget| distance.
+ * Used as fallback when no exact fat+snf match exists.
+ *
+ * @param {Object} hashMap
+ * @param {string} milkKey
+ * @param {string} chartKey
+ * @param {string} effDate
+ * @param {number} fatTarget
+ * @param {number} snfTarget
+ * @returns {number|null}
+ */
+function findClosestRate(hashMap, milkKey, chartKey, effDate, fatTarget, snfTarget) {
+    // Key prefix for rows belonging to this milkType+rateType+date
+    const prefix = `${milkKey}|`;
+    const suffix = `|${chartKey}|${effDate}`;
+
+    let closestRate = null;
+    let minDiff     = Infinity;
+
+    for (const [key, val] of Object.entries(hashMap)) {
+        // Only inspect rate rows (skip __dates__, farmer:, __builtAt)
+        if (!key.startsWith(prefix) || !key.endsWith(suffix)) continue;
+        // Key format: "{milkKey}|{fat}|{snf}|{chartKey}|{date}"
+        const parts = key.split('|');
+        if (parts.length < 5) continue;
+        const rowFat = parseFloat(parts[1]);
+        const rowSnf = parseFloat(parts[2]);
+        if (isNaN(rowFat) || isNaN(rowSnf)) continue;
+
+        const diff = Math.abs(rowFat - fatTarget) + Math.abs(rowSnf - snfTarget);
+        if (diff < minDiff) {
+            minDiff     = diff;
+            closestRate = val;
+        }
+    }
+    return (closestRate != null && closestRate > 0) ? closestRate : null;
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Load the pre-indexed HashMap from disk.
+ * Called once on mount — single IPC call replaces old loadRatesFromCSV() +
+ * rates:get-all-farmer-rate-types.
+ * Returns a plain JS object safe to assign to useRef.current.
  *
  * @param {string} dairyId
- * @returns {Promise<Array>} Parsed rate objects, or [] if cache missing/corrupt
+ * @returns {Promise<Object>}  HashMap object, or {} if cache missing/corrupt
  */
-export async function loadRatesFromCSV(dairyId) {
-    if (!isElectronAvailable()) return [];
-    if (!dairyId) return [];
+export async function loadRatesHashMap(dairyId) {
+    if (!isElectronAvailable() || !dairyId) return {};
     try {
-        const result = await window.electron.invoke('rates:read-csv', { dairyId });
-        if (!result?.success || !result?.data) return [];
-        const rates = csvToRates(result.data);
-        console.log(`[RatesCache] Loaded ${rates.length} rates from CSV (dairy: ${dairyId})`);
-        return rates;
+        const result = await window.electron.invoke('rates:read-hashmap', { dairyId });
+        if (!result?.success || !result?.hashMap) return {};
+        const keyCount = Object.keys(result.hashMap).length;
+        console.log(`[RatesHashMap] Loaded ${keyCount} keys from disk (dairy: ${dairyId})`);
+        return result.hashMap;
     } catch (err) {
-        console.warn('[RatesCache] loadRatesFromCSV failed (non-fatal):', err);
-        return [];
+        console.warn('[RatesHashMap] Load failed (non-fatal):', err);
+        return {};
     }
 }
 
 /**
- * Pure in-memory rate lookup — no network call, <1ms.
- * Mirrors the logic in api.js `getRateForCollection`.
+ * Date-aware rate lookup from the HashMap.
  *
- * Handles correctly:
- *   ✅ Buffalo vs Cow        (milk_type case-insensitive match)
- *   ✅ Multiple rate charts  (sangh, Vibhag A, custom names...)
- *   ✅ Multiple dates        (picks most recent effective_date <= collection date)
- *   ✅ Dairy isolation       (dairy_id strict trimmed match)
- *   ✅ Fallback to sangh     (if farmer's chart has no data)
- *   ✅ Closest fat+snf       (when exact match not found)
- *   ✅ NaN guards            (safe even with bad input)
+ * Fully mirrors the old CSV + Supabase logic:
  *
- * @param {Array}  cache       - Array returned by loadRatesFromCSV()
+ *   Step 1 — Resolve effective date:
+ *            Read the date-index for this milkType+rateType, find the latest
+ *            effective_date that is <= the collection date.
+ *
+ *   Step 2 — Exact fat+snf match for that date.
+ *
+ *   Step 3 — Closest fat+snf match (fallback) for that date.
+ *
+ *   Step 4 — If farmer's rate_type has no data, repeat steps 1-3 for 'sangh'.
+ *
+ *   Step 5 — Return null → caller falls back to Supabase API.
+ *
+ * @param {Object} hashMap     - ratesMapRef.current
  * @param {Object} params
- * @param {string} params.milk_type  - 'Buffalo' or 'Cow'
+ * @param {string} params.milk_type   - 'Buffalo' or 'Cow'
  * @param {number} params.fat
  * @param {number} params.snf
- * @param {string} params.date       - Collection date (YYYY-MM-DD)
- * @param {string} params.rate_type  - Farmer's assigned rate chart
- * @param {string} params.dairy_id
- * @returns {number|null} Rate, or null → caller falls back to Supabase API
+ * @param {string} params.date        - Collection date 'YYYY-MM-DD'
+ * @param {string} params.rate_type   - Farmer's assigned rate chart (e.g. 'sangh', 'Vibhag A')
+ * @returns {number|null}
  */
-export function lookupRateFromCache(cache, { milk_type, fat, snf, date, rate_type = 'sangh', dairy_id }) {
-    if (!cache || cache.length === 0) return null;
+export function lookupRate(hashMap, { milk_type, fat, snf, date, rate_type = 'sangh' }) {
+    if (!hashMap || Object.keys(hashMap).length === 0) return null;
 
     const fatNum = parseFloat(fat);
     const snfNum = parseFloat(snf);
     if (isNaN(fatNum) || isNaN(snfNum)) return null;
+    if (!date) return null;
 
-    const fatRounded = fatNum.toFixed(1);
-    const snfRounded = snfNum.toFixed(1);
-    const milkLower  = (milk_type  || '').toLowerCase().trim();
-    const dairyTrim  = (dairy_id   || '').trim();
-    const chartName  = (rate_type  || 'sangh').trim();
+    const milkKey  = (milk_type  || '').toLowerCase().trim();
+    const chartKey = (rate_type  || 'sangh').trim();
+    const fatKey   = fatNum.toFixed(1);
+    const snfKey   = snfNum.toFixed(1);
 
-    // Helper: row matches a given rate_type / chart name
-    // 'sangh' also matches legacy rows where rate_type is null/empty
-    const matchesType = (r, rType) => {
-        const rt = (r.rate_type || '').trim();
-        if (rType === 'sangh') return rt === 'sangh' || rt === '';
-        return rt === rType;
+    const tryChart = (chart) => {
+        // 1. Resolve effective date: latest date <= collection date
+        const dateIndex = hashMap[`__dates__${milkKey}|${chart}`];
+        const effDate   = findLatestEffectiveDateFor(dateIndex, date);
+        if (!effDate) return null;
+
+        // 2. Exact fat+snf match
+        const exactKey = `${milkKey}|${fatKey}|${snfKey}|${chart}|${effDate}`;
+        if (hashMap[exactKey] != null && hashMap[exactKey] > 0) return hashMap[exactKey];
+
+        // 3. Closest fat+snf match (fallback)
+        return findClosestRate(hashMap, milkKey, chart, effDate, fatNum, snfNum);
     };
 
-    // Filter rows for a given chart name
-    const filterCandidates = (rType) => {
-        let rows = cache.filter(r =>
-            r.dairy_id.trim() === dairyTrim &&                      // dairy isolation
-            (r.milk_type || '').toLowerCase().trim() === milkLower && // Buffalo / Cow
-            matchesType(r, rType)                                   // rate chart
-        );
-        // Only include rates effective on or before the collection date
-        if (date) rows = rows.filter(r => r.effective_date <= date);
-        return rows;
-    };
+    // Try farmer's assigned chart first, then fall back to 'sangh'
+    const primaryRate = tryChart(chartKey);
+    if (primaryRate !== null) return primaryRate;
 
-    // 1. Try farmer's assigned rate chart (e.g. "Vibhag A")
-    let candidates = filterCandidates(chartName);
-
-    // 2. Fallback: try 'sangh' if farmer's chart had no matching rows
-    if (candidates.length === 0 && chartName !== 'sangh') {
-        candidates = filterCandidates('sangh');
+    if (chartKey !== 'sangh') {
+        const sanghRate = tryChart('sangh');
+        if (sanghRate !== null) return sanghRate;
     }
 
-    if (candidates.length === 0) return null;
+    return null;
+}
 
-    // 3. Use the most recent effective_date available
-    const latestDate = candidates.reduce(
-        (best, r) => (r.effective_date > best ? r.effective_date : best),
-        candidates[0].effective_date
-    );
-    const latestRows = candidates.filter(r => r.effective_date === latestDate);
-
-    // 4. Exact fat + snf match
-    const exact = latestRows.find(r =>
-        r.fat.toFixed(1) === fatRounded &&
-        r.snf.toFixed(1) === snfRounded
-    );
-    if (exact && exact.rate > 0) return exact.rate;
-
-    // 5. Closest fat + snf match (smallest sum of absolute differences)
-    let closest = null;
-    let minDiff  = Infinity;
-    for (const r of latestRows) {
-        const diff = Math.abs(r.fat - fatNum) + Math.abs(r.snf - snfNum);
-        if (diff < minDiff) { minDiff = diff; closest = r; }
-    }
-    return (closest && closest.rate > 0) ? closest.rate : null;
+/**
+ * Get a farmer's assigned rate_type from the HashMap.
+ * Replaces the old separate farmerRateTypesMap state.
+ * Farmer entries are stored in the same hashmap with "farmer:{id}" prefix.
+ *
+ * @param {Object}        hashMap
+ * @param {string|number} farmerId
+ * @returns {string}  rate_type string, defaults to 'sangh'
+ */
+export function getFarmerRateType(hashMap, farmerId) {
+    if (!hashMap || !farmerId) return 'sangh';
+    return hashMap[`farmer:${farmerId}`] || 'sangh';
 }

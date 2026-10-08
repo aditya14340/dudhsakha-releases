@@ -18,7 +18,7 @@ import {
     getEmployeePermissions,
     DEFAULT_EMPLOYEE_PERMISSIONS
 } from '../lib/api';
-import { loadRatesFromCSV, lookupRateFromCache } from '../services/ratesCache';
+import { loadRatesHashMap, lookupRate, getFarmerRateType } from '../services/ratesCache';
 
 
 // Custom Searchable Combobox Component
@@ -263,10 +263,11 @@ function Collection({ user }) {
     });
     const [rateError, setRateError] = useState('');
     const [isFetchingRate, setIsFetchingRate] = useState(false); // loading spinner for rate fetch
-    // Local CSV rate cache — loaded once on mount for fast fat/snf → rate lookup
-    const [ratesCache, setRatesCache] = useState([]);
-    // Farmer → rate_type map from local JSON (written by rates:full-rebuild in main process)
-    const [farmerRateTypesMap, setFarmerRateTypesMap] = useState({});
+    // Pre-indexed HashMap for instant O(1) rate lookup.
+    // Stored in useRef (NOT useState) so assignments are synchronous — eliminates
+    // the stale-cache race condition where setState async batching caused wrong rates.
+    // Key format: "{milkType}|{fat}|{snf}|{rateType}" → rate, "farmer:{id}" → rateType
+    const ratesMapRef = useRef({});
     const [isPrintEnabled, setIsPrintEnabled] = useState(true);
     // Thev accounts cache — loaded on mount, refreshed after each save.
     // Kept in state so printReceipt() can look up balances SYNCHRONOUSLY
@@ -347,62 +348,42 @@ function Collection({ user }) {
         capKeys.forEach((k, i) => { const v = localStorage.getItem(k); if (v !== null) capSetters[i](v); });
     }, []);
 
-    // Load local CSV rate cache + farmer rate_type map once on mount
+    // Load HashMap from disk once on mount.
+    // Single IPC call replaces the old rates:read-csv + rates:get-all-farmer-rate-types.
+    // Assigned to useRef.current — synchronous, no re-render triggered.
     useEffect(() => {
         if (!user?.dairy_id) return;
-        const dairyId = user.dairy_id;
-
-        loadRatesFromCSV(dairyId)
-            .then(cache => {
-                if (cache && cache.length > 0) {
-                    setRatesCache(cache);
-                    console.log('[RatesCache] Loaded', cache.length, 'rates from local CSV');
-                }
-            })
-            .catch(err => console.warn('[RatesCache] Load failed (non-fatal):', err));
-
-        if (window.electron) {
-            window.electron.invoke('rates:get-all-farmer-rate-types', { dairyId })
-                .then(res => {
-                    if (res?.success && res.map && Object.keys(res.map).length > 0) {
-                        setFarmerRateTypesMap(res.map);
-                        console.log('[RatesCache] Farmer rate-type map loaded:', Object.keys(res.map).length, 'farmers');
-                    }
-                })
-                .catch(err => console.warn('[RatesCache] Farmer map load failed (non-fatal):', err));
-        }
+        loadRatesHashMap(user.dairy_id).then(map => {
+            ratesMapRef.current = map;
+            console.log('[RatesHashMap] Loaded on mount:', Object.keys(map).length, 'keys (dairy:', user.dairy_id, ')');
+        });
     }, [user?.dairy_id]);
 
-    // BUG 2+3 FIX: Listen for rates:cache-updated from main process
-    // Fires after rates:full-rebuild completes (post login/rates-save/farmer-save)
-    // Reloads both ratesCache + farmerRateTypesMap so new rates/farmer types are
-    // immediately available without navigating away and back.
+    // Listen for rates:cache-updated from main process.
+    // Fires after rates:full-rebuild completes (post login/rates-save/farmer-save).
+    //
+    // KEY CHANGE: main.js now sends the rebuilt HashMap DIRECTLY in the event payload.
+    // We assign it to ratesMapRef.current synchronously — no second IPC call, no
+    // setState async batching gap. The very next rate lookup sees the new data.
     useEffect(() => {
         if (!user?.dairy_id || !window.electron) return;
         const dairyId = user.dairy_id;
 
         const reloadCache = (data) => {
-            // Only reload if the event is for this dairy
             if (data?.dairyId && String(data.dairyId) !== String(dairyId)) return;
-            console.log('[RatesCache] cache-updated event received — reloading...');
 
-            loadRatesFromCSV(dairyId)
-                .then(cache => {
-                    if (cache && cache.length > 0) {
-                        setRatesCache(cache);
-                        console.log('[RatesCache] Hot-reloaded', cache.length, 'rates');
-                    }
-                })
-                .catch(() => {});
-
-            window.electron.invoke('rates:get-all-farmer-rate-types', { dairyId })
-                .then(res => {
-                    if (res?.success && res.map) {
-                        setFarmerRateTypesMap(res.map);
-                        console.log('[RatesCache] Hot-reloaded farmer map:', Object.keys(res.map).length, 'farmers');
-                    }
-                })
-                .catch(() => {});
+            if (data?.hashMap && Object.keys(data.hashMap).length > 0) {
+                // Best path: map was sent directly in the event — assign synchronously.
+                // No async gap, no stale window, no re-render needed.
+                ratesMapRef.current = data.hashMap;
+                console.log('[RatesHashMap] Hot-reloaded from event payload:', Object.keys(data.hashMap).length, 'keys');
+            } else {
+                // Fallback: map wasn't in payload (old main.js?) — read from disk
+                loadRatesHashMap(dairyId).then(map => {
+                    ratesMapRef.current = map;
+                    console.log('[RatesHashMap] Hot-reloaded from disk:', Object.keys(map).length, 'keys');
+                });
+            }
         };
 
         const unsub = window.electron.receive('rates:cache-updated', reloadCache);
@@ -761,16 +742,18 @@ function Collection({ user }) {
 
                     // rate_type priority:
                     //   1. Fresh farmer object from DB (loaded on mount — always up to date)
-                    //   2. Local JSON map (fallback if farmer not in loaded list)
+                    //   2. HashMap "farmer:{id}" entry (same map, no separate state)
                     //   3. Default 'sangh'
-                    const rateType  = selectedFarmer?.rate_type
-                                   || farmerRateTypesMap[String(formData.farmer_id)]
-                                   || 'sangh';
-                    const dairyIdStr = String(user?.dairy_id ?? '');
+                    const rateType = selectedFarmer?.rate_type
+                                  || getFarmerRateType(ratesMapRef.current, formData.farmer_id);
 
-                    // 1. Try local CSV cache (instant, no network)
-                    const cachedRate = lookupRateFromCache(ratesCache, {
-                        milk_type: milkType, fat, snf, date, rate_type: rateType, dairy_id: dairyIdStr,
+                    // 1. Try HashMap (date-aware, synchronous, never stale)
+                    //    ratesMapRef.current is updated synchronously on rebuild —
+                    //    no setState async gap, so this always reflects the latest rates.
+                    //    'date' is passed so the lookup picks the correct effective date
+                    //    (latest effective_date <= collection date), matching Supabase behaviour.
+                    const cachedRate = lookupRate(ratesMapRef.current, {
+                        milk_type: milkType, fat, snf, date, rate_type: rateType,
                     });
                     if (cachedRate !== null && cachedRate > 0) {
                         setFormData(prev => ({ ...prev, rate: cachedRate.toString() }));
@@ -811,10 +794,16 @@ function Collection({ user }) {
         }
 
         setIsFetchingRate(true);
-        const timer = setTimeout(() => { fetchRate().finally(() => setIsFetchingRate(false)); }, 400);
+        // 300ms debounce — HashMap lookup is instant (0ms) so this only guards
+        // against the Supabase fallback being called on every keypress.
+        // Old value was 2000ms (needed because CSV setState was async).
+        // Now that HashMap is synchronous, 300ms is enough.
+        const timer = setTimeout(() => { fetchRate().finally(() => setIsFetchingRate(false)); }, 300);
         return () => clearTimeout(timer);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [formData.fat, formData.snf, formData.milk_type, formData.date, formData.farmer_id, ratesCache]);
+    // ratesMapRef intentionally omitted from deps — useRef changes don't trigger re-renders
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [formData.fat, formData.snf, formData.milk_type, formData.date, formData.farmer_id]);
 
 
 
@@ -1622,7 +1611,8 @@ function Collection({ user }) {
                                 onChange={(val) => handleInputChange({ target: { name: 'farmer_id', value: val } })}
                                 placeholder={t('collection.selectFarmer')}
                                 onEnterPressed={() => {
-                                    if (fatInputRef.current) fatInputRef.current.focus();
+                                    // 1. Farmer → Quantity
+                                    if (quantityInputRef.current) quantityInputRef.current.focus();
                                 }}
                             />
                         </div>
@@ -1677,7 +1667,13 @@ function Collection({ user }) {
                                     name="quantity"
                                     value={formData.quantity || ''}
                                     onChange={handleInputChange}
-                                    onKeyDown={(e) => handleEnterPress(e, fatInputRef)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            // 2. Quantity → Fat
+                                            if (fatInputRef.current) fatInputRef.current.focus();
+                                        }
+                                    }}
                                     placeholder="0.0"
                                     required
                                     style={{
@@ -1711,7 +1707,13 @@ function Collection({ user }) {
                                     name="fat"
                                     value={formData.fat || ''}
                                     onChange={handleInputChange}
-                                    onKeyDown={(e) => handleEnterPress(e, snfInputRef)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            // 3. Fat → SNF
+                                            if (snfInputRef.current) snfInputRef.current.focus();
+                                        }
+                                    }}
                                     placeholder="0.0"
                                     required
                                     style={{
@@ -1747,6 +1749,7 @@ function Collection({ user }) {
                                     onKeyDown={(e) => {
                                         if (e.key === 'Enter') {
                                             e.preventDefault();
+                                            // 4. SNF → Save
                                             if (submitBtnRef.current) submitBtnRef.current.click();
                                         }
                                     }}

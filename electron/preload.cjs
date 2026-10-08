@@ -8,15 +8,15 @@ const ALLOWED_INVOKE_CHANNELS = [
   'print-html',
   'open-pdf',
   'fat-machine-command',
+  'fat-machine-2-command',
   'weight-machine-command',
   'restart-app-for-update',
   'open-external',
   'check-tts-voices',
   'save-device-settings',
   'load-device-settings',
-  'rates:read-csv',
+  'rates:read-hashmap',
   'rates:full-rebuild',
-  'rates:get-all-farmer-rate-types',
 ];
 
 
@@ -26,6 +26,10 @@ const ALLOWED_RECEIVE_CHANNELS = [
   'fat-machine-status',
   'fat-machine-ports',
   'fat-machine-connection',
+  'fat-machine-2-data',
+  'fat-machine-2-status',
+  'fat-machine-2-ports',
+  'fat-machine-2-connection',
   'weight-machine-data',
   'weight-machine-status',
   'weight-machine-ports',

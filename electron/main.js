@@ -388,8 +388,9 @@ const BRIDGE_PID_FILE = () => path.join(app.getPath('userData'), 'bridge_pids.js
 function saveBridgePids() {
   try {
     const pids = {};
-    if (fatMachineProcess?.pid)    pids.fat    = fatMachineProcess.pid;
-    if (weightMachineProcess?.pid) pids.weight = weightMachineProcess.pid;
+    if (fatMachineProcess?.pid)     pids.fat    = fatMachineProcess.pid;
+    if (fatMachine2Process?.pid)    pids.fat2   = fatMachine2Process.pid;
+    if (weightMachineProcess?.pid)  pids.weight = weightMachineProcess.pid;
     fs.writeFileSync(BRIDGE_PID_FILE(), JSON.stringify(pids));
   } catch (e) { /* non-fatal — worst case is a stale PID on next launch */ }
 }
@@ -407,7 +408,7 @@ function killOrphanedBridges() {
       if (!fs.existsSync(pidFile)) { resolve(); return; }
       const pids = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
       fs.unlinkSync(pidFile); // Delete immediately — stale PIDs must not persist
-      const toKill = [pids.fat, pids.weight, pids.tts].filter(Boolean);
+      const toKill = [pids.fat, pids.fat2, pids.weight, pids.tts].filter(Boolean);
       if (toKill.length === 0) { resolve(); return; }
       console.log('[Bridge] Killing orphaned bridge PIDs from previous session:', toKill);
       let done = 0;
@@ -521,11 +522,12 @@ function startFatMachineBridge() {
   });
 }
 
-// Consolidated will-quit: kill BOTH bridges and remove PID file on clean exit.
+// Consolidated will-quit: kill ALL bridges and remove PID file on clean exit.
 // On a crash/force-kill this handler never runs — the PID file stays on disk and
 // killOrphanedBridges() will clean it up when the app is next launched.
 app.on('will-quit', () => {
   if (fatMachineProcess)    { try { fatMachineProcess.kill();    } catch (e) {} fatMachineProcess    = null; }
+  if (fatMachine2Process)   { try { fatMachine2Process.kill();   } catch (e) {} fatMachine2Process   = null; }
   if (weightMachineProcess) { try { weightMachineProcess.kill(); } catch (e) {} weightMachineProcess = null; }
   try { fs.unlinkSync(BRIDGE_PID_FILE()); } catch (e) { /* already gone or never created */ }
 });
@@ -553,6 +555,115 @@ ipcMain.handle('fat-machine-command', async (event, command) => {
     }
   } else {
     return { success: false, error: "Failed to start bridge" };
+  }
+});
+
+
+// --- FAT MACHINE 2 INTEGRATION (optional second FAT machine, default COM4) ---
+let fatMachine2Process = null;
+let fatMachine2Connected = false;
+let fatMachine2Port = null;
+
+function startFatMachine2Bridge() {
+  if (fatMachine2Process) return; // Already running
+
+  const pythonScript = app.isPackaged
+    ? path.join(process.resourcesPath, 'fatmachine', 'python', 'fatmachine_bridge.py')
+    : path.join(__dirname, '../fatmachine/python/fatmachine_bridge.py');
+
+  console.log('Starting Fat Machine 2 Bridge:', pythonScript);
+
+  const pythonExecutable = process.platform === 'win32' ? 'python' : 'python3';
+
+  try {
+    fatMachine2Process = spawn(pythonExecutable, [pythonScript]);
+    saveBridgePids(); // Record PID — next launch will kill it if we crash
+  } catch (e) {
+    console.error('Failed to spawn Fat Machine 2 bridge:', e);
+    sendToRenderer('fat-machine-2-status', 'Python Launch Failed');
+    return;
+  }
+
+  fatMachine2Process.on('error', (err) => {
+    console.error('Fat Machine 2 Process Error:', err);
+    sendToRenderer('fat-machine-2-status', `Python Error: ${err.message}`);
+  });
+
+  fatMachine2Process.stdout.on('data', (data) => {
+    const lines = data.toString().split('\n');
+    lines.forEach(line => {
+      if (!line.trim()) return;
+      try {
+        const json = JSON.parse(line.trim());
+        if (json.type === 'data') {
+          sendToRenderer('fat-machine-2-data', json.payload);
+        } else if (json.type === 'status') {
+          sendToRenderer('fat-machine-2-status', json.payload);
+        } else if (json.type === 'ports') {
+          sendToRenderer('fat-machine-2-ports', json.payload);
+        } else if (json.type === 'connection_status') {
+          fatMachine2Connected = json.connected;
+          fatMachine2Port = json.connected ? (json.port || null) : null;
+          sendToRenderer('fat-machine-2-connection', json);
+          if (json.connected) {
+            sendToRenderer('fat-machine-2-status', `Connected: ${json.port}`);
+          } else {
+            fatMachine2Connected = false;
+            sendToRenderer('fat-machine-2-status', json.message || 'Disconnected');
+          }
+        } else if (json.type === 'error') {
+          console.error('Fat Machine 2 Bridge Error:', json.message);
+          sendToRenderer('fat-machine-2-status', `Error: ${json.message}`);
+        }
+      } catch (e) {
+        console.log('Raw Fat Machine 2 Bridge Output:', line);
+      }
+    });
+  });
+
+  fatMachine2Process.stderr.on('data', (data) => {
+    console.error(`Fat Machine 2 Bridge Stderr: ${data}`);
+  });
+
+  fatMachine2Process.on('close', (code) => {
+    console.log(`Fat Machine 2 bridge exited with code ${code}`);
+    fatMachine2Process = null;
+    fatMachine2Connected = false;
+    fatMachine2Port = null;
+    sendToRenderer('fat-machine-2-status', `Bridge Stopped (Code ${code})`);
+    sendToRenderer('fat-machine-2-connection', { connected: false, message: `Bridge Stopped (Code ${code})` });
+  });
+}
+
+ipcMain.handle('fat-machine-2-command', async (event, command) => {
+  // Status query — no bridge needed
+  if (command.action === 'get_status') {
+    return { success: true, connected: fatMachine2Connected, port: fatMachine2Port };
+  }
+
+  // For disconnect: if bridge isn't running, nothing to do
+  if (command.action === 'disconnect' && !fatMachine2Process) {
+    fatMachine2Connected = false;
+    fatMachine2Port = null;
+    return { success: true };
+  }
+
+  if (!fatMachine2Process) {
+    startFatMachine2Bridge();
+    // Give bridge time to start
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  if (fatMachine2Process) {
+    try {
+      fatMachine2Process.stdin.write(JSON.stringify(command) + '\n');
+      return { success: true };
+    } catch (e) {
+      console.error('Failed to write to Fat Machine 2 bridge:', e);
+      return { success: false, error: e.message };
+    }
+  } else {
+    return { success: false, error: 'Failed to start Fat Machine 2 bridge' };
   }
 });
 
@@ -690,31 +801,34 @@ ipcMain.handle('load-device-settings', () => {
 
 
 
-// ─── RATES CSV CACHE ──────────────────────────────────────────────────────────
-const getRatesCachePath = (dairyId) =>
-  path.join(app.getPath('userData'), `rates_cache_${dairyId}.csv`);
+// ─── RATES HASHMAP CACHE ──────────────────────────────────────────────────────
+// v2: Replaces the old CSV flat-row cache with a pre-indexed JSON HashMap.
+//
+// WHY: The CSV + useState approach had a race condition:
+//   rates:full-rebuild writes CSV → fires rates:cache-updated
+//   → renderer reads CSV async (IPC) → calls setRatesCache(newData)
+//   → but React setState is async-batched: OLD array still in state
+//   → if user enters fat/snf NOW, lookup hits OLD cache → wrong rate
+//
+// HOW THIS FIXES IT:
+//   - HashMap is sent directly in the rates:cache-updated event payload
+//   - Renderer stores it in useRef (synchronous, instant, no re-render gap)
+//   - Lookup is O(1) — one property access, no loops
+//   - Date filtering pre-computed HERE at rebuild time (not on every keypress)
+//
+// HashMap key format:
+//   "{milkType}|{fat}|{snf}|{rateType}"  → rate (number)
+//   "farmer:{farmerId}"                   → rateType (string)
+//   "__builtAt"                           → ISO timestamp (debug)
+//
+// File: userData/rates_hashmap_{dairyId}.json
 
-
-
-// Read the local CSV file — called by renderer's loadRatesFromCSV()
-ipcMain.handle('rates:read-csv', (event, { dairyId }) => {
-  try {
-    if (!dairyId) return { success: true, data: null };
-    const filePath = getRatesCachePath(dairyId);
-    if (!fs.existsSync(filePath)) return { success: true, data: null };
-    const data = fs.readFileSync(filePath, 'utf8');
-    return { success: true, data };
-  } catch (e) {
-    console.error('[RatesCache] Failed to read CSV:', e);
-    return { success: true, data: null };
-  }
-});
+const getRatesHashMapPath = (dairyId) =>
+  path.join(app.getPath('userData'), `rates_hashmap_${dairyId}.json`);
 
 // ─── RATES FULL REBUILD (Proxy + anon key) ────────────────────────────────────
-// Runs in the Electron main process. Fetches ALL rates + farmer rate_type
-// assignments for the dairy, then writes two local files:
-//   rates_cache_{dairyId}.csv          — fat/snf → rate lookup table
-//   farmer_rate_types_{dairyId}.json   — { farmerId: rateType, ... }
+// Fetches ALL rates + farmer rate_type from Supabase, pre-indexes into a HashMap,
+// writes one JSON file, and sends the map directly to the renderer via IPC event.
 // Uses the same proxy URL + anon key as the renderer — no extra secrets.
 
 const SUPABASE_PROXY_URL = 'https://supabase-proxy.dudhsakha-api.workers.dev';
@@ -749,78 +863,125 @@ async function supabaseFetchAll(table, dairyId, columns = '*', authToken = null)
   return allRows;
 }
 
-function csvQ(val) {
-  return `"${String(val ?? '').replace(/"/g, '""')}"`;
-}
+/**
+ * buildRatesHashMap — pre-indexes ALL rates into a lookup map.
+ *
+ * STORES ALL EFFECTIVE DATES (not just the latest) so that past-date
+ * collection entries get the correct rate for THAT date.
+ *
+ * Key formats in the map:
+ *
+ *   Rate data (per fat/snf/date):
+ *     "{milkType}|{fat}|{snf}|{rateType}|{date}"   →  rate (number)
+ *
+ *   Date index (sorted ASC list of distinct effective dates per combo):
+ *     "__dates__{milkType}|{rateType}"              →  ["2026-09-01", "2026-10-01", ...]
+ *
+ *   Farmer → rate_type:
+ *     "farmer:{farmerId}"                           →  rateType (string)
+ *
+ *   Build timestamp (debug):
+ *     "__builtAt"                                   →  ISO string
+ *
+ * This allows lookupRate to:
+ *   - Pick the correct effective date (≤ collection date) from the index
+ *   - Then do an O(1) rate lookup for that date
+ *   - Exactly mirrors what the old CSV + Supabase query did
+ */
+function buildRatesHashMap(rates, farmers) {
+  const map = {};
 
-function buildRatesCSV(rows) {
-  const header = 'milk_type,fat,snf,rate,effective_date,rate_type,dairy_id';
-  const lines  = [header];
-  for (const r of rows) {
+  // Step 1: Write every rate row into the map keyed with its effective_date
+  //         Also collect distinct effective dates per milkType+rateType combo
+  const dateSetMap = {}; // comboKey → Set of effective dates
+
+  for (const r of rates) {
     const fat  = parseFloat(r.fat  ?? 0);
     const snf  = parseFloat(r.snf  ?? 0);
     const rate = parseFloat(r.rate ?? 0);
     if (isNaN(fat) || isNaN(snf) || isNaN(rate) || rate <= 0) continue;
-    lines.push([
-      csvQ(r.milk_type      || ''),
-      fat.toFixed(1),
-      snf.toFixed(1),
-      rate.toFixed(2),
-      csvQ(r.effective_date || ''),
-      csvQ(r.rate_type      || 'sangh'),
-      csvQ(String(r.dairy_id ?? '')),
-    ].join(','));
-  }
-  return lines.join('\n');
-}
 
-const getFarmerRateTypesPath = (dairyId) =>
-  path.join(app.getPath('userData'), `farmer_rate_types_${dairyId}.json`);
+    const milkKey  = (r.milk_type  || '').toLowerCase().trim();
+    const chartKey = (r.rate_type  || 'sangh').trim();
+    const effDate  = (r.effective_date || '').slice(0, 10); // always ISO YYYY-MM-DD
+    if (!effDate) continue;
+
+    // Rate lookup key includes date — allows correct past-date lookups
+    const rateKey = `${milkKey}|${fat.toFixed(1)}|${snf.toFixed(1)}|${chartKey}|${effDate}`;
+    map[rateKey]  = rate;
+
+    // Accumulate distinct dates per combo
+    const comboKey = `${milkKey}|${chartKey}`;
+    if (!dateSetMap[comboKey]) dateSetMap[comboKey] = new Set();
+    dateSetMap[comboKey].add(effDate);
+  }
+
+  // Step 2: Write date indexes (sorted ASC) for each milkType+rateType combo
+  for (const [comboKey, dateSet] of Object.entries(dateSetMap)) {
+    const sortedDates = [...dateSet].sort(); // ISO strings sort correctly lexicographically
+    map[`__dates__${comboKey}`] = sortedDates;
+  }
+
+  // Step 3: Embed farmer→rate_type map (prefix: "farmer:")
+  for (const f of farmers) {
+    map[`farmer:${f.id}`] = (f.rate_type || 'sangh').trim();
+  }
+
+  // Step 4: Build timestamp for debugging
+  map['__builtAt'] = new Date().toISOString();
+
+  return map;
+}
 
 ipcMain.handle('rates:full-rebuild', async (event, { dairyId, authToken }) => {
   try {
     if (!dairyId) return { success: false, error: 'dairyId required' };
-    console.log(`[RatesCache] Full rebuild started for dairy ${dairyId}...`);
+    console.log(`[RatesHashMap] Full rebuild started for dairy ${dairyId}...`);
 
     const [rates, farmers] = await Promise.all([
       supabaseFetchAll('rates',   dairyId, 'milk_type,fat,snf,rate,effective_date,rate_type,dairy_id', authToken),
       supabaseFetchAll('farmers', dairyId, 'id,rate_type,dairy_id', authToken),
     ]);
 
-    // Write rates CSV
-    fs.writeFileSync(getRatesCachePath(dairyId), buildRatesCSV(rates), 'utf8');
+    const hashMap = buildRatesHashMap(rates, farmers);
 
-    // Write farmer→rate_type map
-    const farmerMap = {};
-    for (const f of farmers) farmerMap[String(f.id)] = f.rate_type || 'sangh';
-    fs.writeFileSync(getFarmerRateTypesPath(dairyId), JSON.stringify(farmerMap, null, 2), 'utf8');
+    // Write to disk — persists across app restarts
+    fs.writeFileSync(getRatesHashMapPath(dairyId), JSON.stringify(hashMap), 'utf8');
 
-    const milkTypes = [...new Set(rates.map(r => r.milk_type))].join(', ');
-    const charts    = [...new Set(rates.map(r => r.rate_type || 'sangh'))].join(', ');
-    console.log(`[RatesCache] ✅ Done: ${rates.length} rates | Milk: ${milkTypes} | Charts: ${charts} | Farmers: ${farmers.length}`);
+    const milkTypes  = [...new Set(rates.map(r => r.milk_type))].join(', ');
+    const charts     = [...new Set(rates.map(r => r.rate_type || 'sangh'))].join(', ');
+    const keyCount   = Object.keys(hashMap).length;
+    console.log(`[RatesHashMap] ✅ Done: ${rates.length} rates | Milk: ${milkTypes} | Charts: ${charts} | Farmers: ${farmers.length} | Map keys: ${keyCount}`);
 
-    // Notify ALL renderer windows so Collection.jsx can reload stale state
-    const { BrowserWindow } = require('electron');
+    // Notify ALL renderer windows — AND send the map directly in the payload.
+    // This means the renderer does NOT need a second IPC round-trip to read the file.
+    // It assigns the map to useRef.current synchronously — zero stale window.
+    // NOTE: BrowserWindow is already imported at the top of this file (ES module).
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) {
-        win.webContents.send('rates:cache-updated', { dairyId });
+        win.webContents.send('rates:cache-updated', { dairyId, hashMap });
       }
     });
 
-    return { success: true, ratesCount: rates.length, farmerCount: farmers.length };
+    return { success: true, hashMap, ratesCount: rates.length, farmerCount: farmers.length };
   } catch (e) {
-    console.error('[RatesCache] Full rebuild failed:', e);
+    console.error('[RatesHashMap] Full rebuild failed:', e);
     return { success: false, error: e.message };
   }
 });
 
-ipcMain.handle('rates:get-all-farmer-rate-types', (event, { dairyId }) => {
+// Read the HashMap from disk — called on mount by loadRatesHashMap().
+// Single IPC call replaces the old rates:read-csv + rates:get-all-farmer-rate-types.
+ipcMain.handle('rates:read-hashmap', (event, { dairyId }) => {
   try {
-    const filePath = getFarmerRateTypesPath(dairyId);
-    if (!fs.existsSync(filePath)) return { success: true, map: {} };
-    return { success: true, map: JSON.parse(fs.readFileSync(filePath, 'utf8')) };
+    if (!dairyId) return { success: true, hashMap: {} };
+    const filePath = getRatesHashMapPath(dairyId);
+    if (!fs.existsSync(filePath)) return { success: true, hashMap: {} };
+    const hashMap = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return { success: true, hashMap };
   } catch (e) {
-    return { success: true, map: {} };
+    console.error('[RatesHashMap] Failed to read from disk:', e);
+    return { success: true, hashMap: {} };
   }
 });
 // ─────────────────────────────────────────────────────────────────────────────
